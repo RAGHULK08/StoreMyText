@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Save Text to Cloud</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+    <header>
+        <h1>📝 Save Text to Cloud</h1>
+        <button id="logoutBtn" class="logout" style="display:none;">🚪 Logout</button>
+    </header>
+
+    <main>
+        <section id="registerSection" class="view active">
+            <h2>Register</h2>
+            <form id="registerForm">
+                <input type="email" id="registerEmail" placeholder="Enter Email" required />
+                <input type="password" id="registerPassword" placeholder="Enter Password" required />
+                <input type="password" id="registerConfirmPassword" placeholder="Confirm Password" required />
+                <button type="submit">Register</button>
+            </form>
+            <p id="registerMsg" class="message"></p>
+            <p class="form-link"><a href="#" id="goToLogin">Already have an account? Login</a></p>
+        </section>
+        
+        <section id="loginSection" class="view">
+            <h2>Login</h2>
+            <form id="loginForm">
+                <input type="email" id="loginEmail" placeholder="Enter Email" required />
+                <input type="password" id="loginPassword" placeholder="Enter Password" required />
+                <button type="submit">Login</button>
+            </form>
+            <p id="loginMsg" class="message"></p>
+            <p class="form-link"><a href="#" id="goToRegister">New user? Register here</a></p>
+        </section>
+
+        <section id="mainSection" class="view">
+            <h2>Welcome!</h2>
+            <textarea id="textInput" placeholder="Type or select text to save..."></textarea>
+            <div class="btn-row">
+                <button id="saveBtn">💾 Save to Cloud</button>
+                <button id="historyBtn">📚 History</button>
+            </div>
+            <p id="status" class="message"></p>
+        </section>
+
+        <section id="historySection" class="view">
+            <h2>Saved History</h2>
+            <form id="historyForm">
+                <input type="password" id="historyPassword" placeholder="Enter Password to View History" required />
+                <button type="submit">Show History</button>
+            </form>
+            <div id="historyList"></div>
+            <p id="historyStatus" class="message"></p>
+            <button id="backToMain">⬅ Back</button>
+        </section>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
