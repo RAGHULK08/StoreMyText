@@ -22,7 +22,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const backToMain = document.getElementById("backToMain");
 
     // --- State Management & Configuration ---
-    const BACKEND_BASE_URL = "http://127.0.0.1:8081/api"; // Updated URL for our Flask server
+    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com"; // Updated URL for our Flask server
     let loggedInUser = null;
     let loggedInPassword = null; // Storing password for history check
 
@@ -194,4 +194,5 @@ document.addEventListener("DOMContentLoaded", () => {
             showStatusMessage(historyStatus, "Failed to fetch history.", "red");
         }
     });
+
 });
