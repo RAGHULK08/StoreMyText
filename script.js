@@ -164,36 +164,97 @@ document.addEventListener("DOMContentLoaded", () => {
 
     backToMain.addEventListener("click", () => showView(mainSection));
 
-    // UPDATED History Form Submission
-    historyForm.addEventListener("submit", async e => {
-        e.preventDefault();
-        const pw = historyPassword.value;
+   // --- New Function to Handle Deleting a Note ---
+async function handleDeleteNote(filename) {
+    if (!loggedInUser || !loggedInPassword) {
+        showStatusMessage(historyStatus, "You are not logged in.", "red");
+        return;
+    }
 
-        if (!loggedInUser) return showStatusMessage(historyStatus, "Please login first.", "red");
-        if (!pw) return showStatusMessage(historyStatus, "Enter your password to view history.", "red");
+    // Ask the user for confirmation
+    if (!confirm(`Are you sure you want to delete "${filename}"?`)) {
+        return;
+    }
 
-        // Verify password against the one stored during login
-        if (pw !== loggedInPassword) {
-            return showStatusMessage(historyStatus, "Incorrect password.", "red");
+    showStatusMessage(historyStatus, "Deleting note...", "#444");
+
+    try {
+        const res = await fetch(`${BACKEND_BASE_URL}/delete`, {
+            method: 'DELETE', // Use the correct DELETE method
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                emailid: loggedInUser,
+                filename: filename
+            })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+            showStatusMessage(historyStatus, "Note deleted successfully!", "green");
+            // Refresh the history list to show the note has been removed
+            historyForm.dispatchEvent(new Event('submit'));
+        } else {
+            showStatusMessage(historyStatus, data.error || "Failed to delete note.", "red");
+        }
+    } catch (error) {
+        showStatusMessage(historyStatus, "Cannot connect to the server.", "red");
+    }
+}
+
+
+// --- UPDATED History Form Submission ---
+historyForm.addEventListener("submit", async e => {
+    e.preventDefault();
+    const pw = historyPassword.value;
+
+    if (!loggedInUser) return showStatusMessage(historyStatus, "Please login first.", "red");
+    if (!pw) return showStatusMessage(historyStatus, "Enter your password to view history.", "red");
+
+    if (pw !== loggedInPassword) {
+        return showStatusMessage(historyStatus, "Incorrect password.", "red");
+    }
+
+    showStatusMessage(historyStatus, "Loading...", "#444");
+    historyList.innerHTML = ""; // Clear previous list
+
+    try {
+        const url = new URL(`${BACKEND_BASE_URL}/userdata`);
+        url.searchParams.set("emailid", loggedInUser);
+
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Server responded with an error');
+
+        const data = await res.json();
+
+        if (data.length > 0) {
+            data.forEach(note => {
+                const noteDiv = document.createElement('div');
+                noteDiv.className = 'history-item';
+
+                const noteContent = document.createElement('div');
+                noteContent.innerHTML = `<strong>${note.filename}</strong><br>${note.filecontent.replace(/\n/g, '<br>')}`;
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'delete-btn';
+                deleteBtn.textContent = 'Delete';
+                deleteBtn.onclick = () => handleDeleteNote(note.filename); // Set the click handler
+
+                noteDiv.appendChild(noteContent);
+                noteDiv.appendChild(deleteBtn);
+                historyList.appendChild(noteDiv);
+            });
+        } else {
+            historyList.innerHTML = "No saved notes found.";
         }
 
-        showStatusMessage(historyStatus, "Loading...", "#444");
-        try {
-            const url = new URL(`${BACKEND_BASE_URL}/userdata`);
-            url.searchParams.set("emailid", loggedInUser);
-
-            const res = await fetch(url);
-            if (!res.ok) throw new Error('Server responded with an error');
-
-            const data = await res.json();
-            historyList.innerHTML = data.length
-                ? data.map(n => `<div><strong>${n.filename}</strong><br>${n.filecontent.replace(/\n/g, '<br>')}</div>`).join("")
-                : "No saved notes found.";
-            showStatusMessage(historyStatus, "History loaded successfully.", "green");
-        } catch (error) {
-            showStatusMessage(historyStatus, "Failed to fetch history.", "red");
-        }
-    });
+        showStatusMessage(historyStatus, "", "green");
+    } catch (error) {
+        showStatusMessage(historyStatus, "Failed to fetch history.", "red");
+    }
+});
 
 });
+
 
