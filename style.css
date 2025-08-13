@@ -185,6 +185,37 @@ button:hover {
     word-wrap: break-word;
 }
 
+/* Styling for individual history items */
+.history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    gap: 15px;
+}
+
+.history-item:last-child {
+    border-bottom: none;
+}
+
+/* Styling for the new delete button */
+.delete-btn {
+    background: #e74c3c; /* A red color for delete actions */
+    color: white;
+    font-size: 0.8em;
+    padding: 6px 12px;
+    border-radius: 5px;
+    margin-top: 0; /* Override default button margin */
+    flex-shrink: 0; /* Prevent the button from shrinking */
+}
+
+.delete-btn:hover {
+    background: #c0392b; /* Darker red on hover */
+    filter: brightness(1.0); /* Reset filter from main button style */
+}
+
 #historyList>div:last-child {
     border-bottom: none;
 }
@@ -208,4 +239,5 @@ button:hover {
         opacity: 1;
         transform: translateY(0);
     }
+
 }
