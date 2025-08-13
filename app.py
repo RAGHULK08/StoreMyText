@@ -61,6 +61,10 @@ init_db()
 
 # --- API Endpoints (with updated DB connection logic) ---
 
+@app.route('/')
+def health_check():
+    return "Backend is running!"
+
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -146,4 +150,5 @@ def userdata():
 
 # The main execution part is no longer needed for Render
 # if __name__ == '__main__':
+
 #     app.run(port=8081, debug=True)
