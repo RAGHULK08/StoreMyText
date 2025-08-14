@@ -16,29 +16,30 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("FATAL: DATABASE_URL environment variable is not set.")
 
-# Fix for Render's postgres URL prefix
+# Fix URL prefix for psycopg2 compatibility
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 def get_db_connection():
-    """Creates a new database connection with SSL required."""
+    """Create and return a new database connection."""
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # ------------------ Password Validation ------------------
 def is_valid_password(password):
-    """Validates password to be at least 8 chars, incl uppercase, lowercase, symbol."""
+    """Validate password complexity."""
     return bool(re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$", password))
 
-# ------------------ Database Initialization ------------------
+# ------------------ Initialize Database ------------------
 def init_db():
-    """Create database tables if they don't already exist."""
+    """Initialize database tables if not present."""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT to_regclass('public.users');")
                 if cursor.fetchone()[0]:
-                    return "Tables already exist."
-
+                    print("Database already initialized.")
+                    return
+                print("Creating database tables...")
                 cursor.execute("""
                     CREATE TABLE users (
                         id SERIAL PRIMARY KEY,
@@ -56,22 +57,15 @@ def init_db():
                     )
                 """)
                 conn.commit()
-        return "Database tables created successfully."
+                print("Database created successfully.")
     except Exception as e:
-        return f"Error during database initialization: {str(e)}"
+        print("Error while initializing database:", e)
 
-# CLI command for manual init
+# Flask CLI command for manual db init (run locally or from managed shell)
 @app.cli.command("init-db")
 def init_db_command():
-    msg = init_db()
-    click.echo(msg)
-
-# ------------------ Temporary Setup Route ------------------
-# **IMPORTANT: Remove after first successful run to avoid security risks!**
-@app.route("/_internal_/create-tables")
-def create_tables():
-    msg = init_db()
-    return msg, 200
+    init_db()
+    click.echo("Initialized the database.")
 
 # ------------------ API Endpoints ------------------
 @app.route("/")
@@ -88,21 +82,21 @@ def register():
         return jsonify({"error": "Email and password are required."}), 400
 
     if not is_valid_password(password):
-        return jsonify({"error": "Password must be at least 8 characters and include uppercase, lowercase, and a symbol."}), 400
+        return jsonify({"error": "Password must be at least 8 characters long, include uppercase, lowercase, and a symbol."}), 400
 
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
+                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
                 if cursor.fetchone():
                     return jsonify({"error": "Email already registered."}), 409
 
-                hashed = generate_password_hash(password)
-                cursor.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, hashed))
+                hashed_password = generate_password_hash(password)
+                cursor.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, hashed_password))
                 conn.commit()
         return jsonify({"message": "Registration successful."}), 201
     except Exception as e:
-        print("Error in register:", e)
+        print("Database error during register:", e)
         return jsonify({"error": "Database error."}), 500
 
 @app.route("/api/login", methods=["POST"])
@@ -112,7 +106,7 @@ def login():
     password = data.get("password") or ""
 
     if not email or not password:
-        return jsonify({"error": "Email and password are required."}), 400
+        return jsonify({"error": "Invalid email or password."}), 401
 
     try:
         with get_db_connection() as conn:
@@ -121,10 +115,9 @@ def login():
                 user = cursor.fetchone()
                 if user and check_password_hash(user[0], password):
                     return jsonify({"message": "Login successful."}), 200
-                else:
-                    return jsonify({"error": "Invalid email or password."}), 401
+                return jsonify({"error": "Invalid email or password."}), 401
     except Exception as e:
-        print("Error in login:", e)
+        print("Database error during login:", e)
         return jsonify({"error": "Database error."}), 500
 
 @app.route("/api/userdata", methods=["POST", "GET"])
@@ -138,7 +131,7 @@ def userdata():
                     filename = data.get("filename")
                     filecontent = data.get("filecontent")
 
-                    cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
+                    cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
                     user = cursor.fetchone()
                     if not user:
                         return jsonify({"error": "User not found."}), 404
@@ -165,7 +158,7 @@ def userdata():
                     return jsonify(notes), 200
 
     except Exception as e:
-        print("Error in userdata:", e)
+        print("Database error during userdata:", e)
         return jsonify({"error": "Database error."}), 500
 
 @app.route("/api/delete", methods=["DELETE"])
@@ -180,21 +173,20 @@ def delete_note():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
+                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
                 user = cursor.fetchone()
                 if not user:
                     return jsonify({"error": "User not found."}), 404
 
                 cursor.execute(
-                    "DELETE FROM notes WHERE user_id=%s AND filename=%s",
+                    "DELETE FROM notes WHERE user_id = %s AND filename = %s",
                     (user[0], filename),
                 )
                 conn.commit()
                 return jsonify({"message": "Note deleted successfully."}), 200
     except Exception as e:
-        print("Error deleting note:", e)
+        print("Database error during delete:", e)
         return jsonify({"error": "Database error."}), 500
-
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
