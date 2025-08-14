@@ -27,6 +27,7 @@ def get_db_connection():
 # ------------------ Password Validation ------------------
 def is_valid_password(password):
     """Validate password complexity."""
+    # (at least one lowercase, one uppercase, one special char or underscore, at least 8 chars)
     return bool(re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$", password))
 
 # ------------------ Initialize Database ------------------
@@ -61,7 +62,7 @@ def init_db():
     except Exception as e:
         print("Error while initializing database:", e)
 
-# Flask CLI command for manual db init (run locally or from managed shell)
+# Flask CLI command for manual db init
 @app.cli.command("init-db")
 def init_db_command():
     init_db()
@@ -77,20 +78,16 @@ def register():
     data = request.get_json()
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
-
     if not email or not password:
         return jsonify({"error": "Email and password are required."}), 400
-
     if not is_valid_password(password):
         return jsonify({"error": "Password must be at least 8 characters long, include uppercase, lowercase, and a symbol."}), 400
-
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
                 if cursor.fetchone():
                     return jsonify({"error": "Email already registered."}), 409
-
                 hashed_password = generate_password_hash(password)
                 cursor.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, hashed_password))
                 conn.commit()
@@ -104,10 +101,8 @@ def login():
     data = request.get_json()
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
-
     if not email or not password:
         return jsonify({"error": "Invalid email or password."}), 401
-
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -130,33 +125,26 @@ def userdata():
                     email = (data.get("emailid") or "").strip().lower()
                     filename = data.get("filename")
                     filecontent = data.get("filecontent")
-
                     cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
                     user = cursor.fetchone()
                     if not user:
                         return jsonify({"error": "User not found."}), 404
-
                     cursor.execute(
                         "INSERT INTO notes (user_id, filename, filecontent) VALUES (%s, %s, %s)",
                         (user["id"], filename, filecontent),
                     )
                     conn.commit()
                     return jsonify({"message": "Note saved successfully."}), 201
-
                 elif request.method == "GET":
                     email = (request.args.get("emailid") or "").strip().lower()
+                    print(f"History GET for {email}")  # Debug log for Render logs
                     cursor.execute(
-                        """
-                        SELECT filename, filecontent FROM notes
-                        WHERE user_id = (
-                            SELECT id FROM users WHERE email = %s
-                        )
-                        """,
+                        "SELECT filename, filecontent FROM notes WHERE user_id = (SELECT id FROM users WHERE email = %s)",
                         (email,),
                     )
                     notes = cursor.fetchall()
-                    return jsonify(notes), 200
-
+                    print("History result:", notes)  # Debug log for Render logs
+                    return jsonify([dict(row) for row in notes]), 200
     except Exception as e:
         print("Database error during userdata:", e)
         return jsonify({"error": "Database error."}), 500
@@ -166,10 +154,8 @@ def delete_note():
     data = request.get_json()
     email = (data.get("emailid") or "").strip().lower()
     filename = data.get("filename")
-
     if not email or not filename:
         return jsonify({"error": "Email and filename are required."}), 400
-
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -177,7 +163,6 @@ def delete_note():
                 user = cursor.fetchone()
                 if not user:
                     return jsonify({"error": "User not found."}), 404
-
                 cursor.execute(
                     "DELETE FROM notes WHERE user_id = %s AND filename = %s",
                     (user[0], filename),
