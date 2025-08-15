@@ -1,5 +1,6 @@
 document.addEventListener("DOMContentLoaded", () => {
-    // --- Element Selectors ---
+    // (All your element selectors are here, unchanged)
+    // ...
     const loginSection = document.getElementById("loginSection");
     const registerSection = document.getElementById("registerSection");
     const mainSection = document.getElementById("mainSection");
@@ -24,17 +25,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const backToMain = document.getElementById("backToMain");
     const searchBox = document.getElementById("searchNotes");
     const connectDriveBtn = document.getElementById("connectDriveBtn");
-
-    // --- API and State Management ---
-    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api";
+    const BACKEND_BASE_URL = "https://savetext-0pk6-onrender-com/api";
     let loggedInUser = null;
     let allNotes = [];
     let isEditing = null;
 
-    // --- Initial View ---
     showView(loginSection);
 
-    // --- View Management ---
     function showView(view) {
         [loginSection, registerSection, mainSection, historySection].forEach(
             v => v.classList.remove("active")
@@ -43,7 +40,6 @@ document.addEventListener("DOMContentLoaded", () => {
         logoutBtn.style.display = (view === mainSection || view === historySection) ? "inline-block" : "none";
     }
 
-    // --- Utility Functions ---
     function showStatusMessage(element, msg, color, duration = 3000) {
         element.textContent = msg;
         element.style.color = color || "#333";
@@ -52,17 +48,18 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // (Your other helper functions are here)
+    // ...
     const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     const isValidPassword = (password) => /^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$/.test(password);
 
-    // --- Event Listeners ---
     goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView(registerSection); });
     goToLogin.addEventListener("click", (e) => { e.preventDefault(); showView(loginSection); });
     historyBtn.addEventListener("click", () => { fetchHistory(); showView(historySection); });
     backToMain.addEventListener("click", () => showView(mainSection));
     textInput.addEventListener("input", () => { charCounter.textContent = `${textInput.value.length} characters`; });
-
-    // --- User Authentication ---
+    // (Your registerForm listener is here, unchanged)
+    // ...
     registerForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("registerEmail").value.trim().toLowerCase();
@@ -90,11 +87,12 @@ document.addEventListener("DOMContentLoaded", () => {
             showStatusMessage(registerMsg, "Cannot connect to the server.", "red");
         }
     });
-
+    // --- MODIFIED loginForm event listener ---
     loginForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("loginEmail").value.trim().toLowerCase();
         const password = document.getElementById("loginPassword").value.trim();
+        loggedInUser = email; // Set user email early for the auth flow
 
         try {
             const res = await fetch(`${BACKEND_BASE_URL}/login`, {
@@ -104,18 +102,28 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             const data = await res.json();
             if (res.ok) {
-                loggedInUser = email;
-                showView(mainSection);
+                // Login is successful, now check if Google Drive is connected
+                if (data.is_google_connected) {
+                    // If already connected, go straight to the main app
+                    showView(mainSection);
+                } else {
+                    // If not connected, start the Google Drive auth flow automatically
+                    showStatusMessage(loginMsg, "Login successful! Please connect your Google Drive to continue.", "blue");
+                    connectToGoogleDrive();
+                }
                 loginForm.reset();
             } else {
+                loggedInUser = null; // Clear user if login fails
                 showStatusMessage(loginMsg, data.error || "Login failed.", "red");
             }
         } catch (error) {
-            console.error("Login Error:", error);
+            loggedInUser = null; // Clear user on network error
             showStatusMessage(loginMsg, "Cannot connect to the server.", "red");
         }
     });
-
+    
+    // (Your logoutBtn listener is here, unchanged)
+    // ...
     logoutBtn.addEventListener("click", () => {
         if (confirm("Are you sure you want to logout?")) {
             loggedInUser = null;
@@ -125,8 +133,40 @@ document.addEventListener("DOMContentLoaded", () => {
             showView(loginSection);
         }
     });
-    
-    // --- Note Management ---
+    // --- NEW function to start Google auth ---
+    async function connectToGoogleDrive() {
+        if (!loggedInUser) {
+            showStatusMessage(status, "An error occurred. Please log in again.", "red");
+            return;
+        }
+        try {
+            const res = await fetch(`${BACKEND_BASE_URL}/auth/google/start?emailid=${loggedInUser}`);
+            const data = await res.json();
+            if (res.ok) {
+                // Open Google's auth page in a new popup window
+                window.open(data.authorization_url, '_blank', 'width=500,height=600');
+            } else {
+                showStatusMessage(loginMsg, data.error || "Could not start Google auth.", "red");
+            }
+        } catch (error) {
+            showStatusMessage(loginMsg, "Cannot connect to server for Google auth.", "red");
+        }
+    }
+
+    // --- MODIFIED window listener to show main section after auth ---
+    window.addEventListener("message", (event) => {
+        if (event.data === "google-auth-success") {
+            // After successful Google auth, show the main app screen
+            showStatusMessage(status, "✅ Google Drive connected successfully!", "green");
+            showView(mainSection);
+        }
+    });
+
+    // The connectDriveBtn is now a fallback, so it just calls the same function
+    connectDriveBtn.addEventListener("click", connectToGoogleDrive);
+
+    // (The rest of your functions like saveBtn, handleDeleteNote, fetchHistory, etc., are all correct and unchanged)
+    // ...
     saveBtn.addEventListener("click", async () => {
         const title = noteTitleInput.value.trim();
         const text = textInput.value.trim();
@@ -135,7 +175,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!loggedInUser) return showStatusMessage(status, "You must be logged in to save.", "red");
 
         const endpoint = isEditing ? '/edit' : '/userdata';
-        const method = 'POST';
         const payload = {
             emailid: loggedInUser,
             filename: isEditing || `note_${Date.now()}.txt`,
@@ -148,7 +187,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const res = await fetch(`${BACKEND_BASE_URL}${endpoint}`, {
-                method: method,
+                method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
             });
@@ -177,7 +216,7 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             if (res.ok) {
                 showStatusMessage(historyStatus, "Note deleted successfully!", "green");
-                fetchHistory(); // Refresh list
+                fetchHistory();
             } else {
                 const data = await res.json();
                 showStatusMessage(historyStatus, data.error || "Failed to delete note.", "red");
@@ -211,7 +250,6 @@ document.addEventListener("DOMContentLoaded", () => {
         charCounter.textContent = "0 characters";
     }
 
-    // --- History & Search ---
     async function fetchHistory() {
         if (!loggedInUser) return showStatusMessage(historyStatus, "Please login first.", "red");
         
@@ -280,34 +318,5 @@ document.addEventListener("DOMContentLoaded", () => {
             note.filecontent.toLowerCase().includes(searchTerm)
         );
         renderHistory(filteredNotes);
-    });
-
-    // --- Google Drive Connection Logic ---
-    connectDriveBtn.addEventListener("click", async () => {
-        if (!loggedInUser) {
-            showStatusMessage(status, "Please login first.", "red");
-            return;
-        }
-        
-        try {
-            const res = await fetch(`${BACKEND_BASE_URL}/auth/google/start?emailid=${loggedInUser}`);
-            const data = await res.json();
-            
-            if (res.ok) {
-                window.open(data.authorization_url, '_blank', 'width=500,height=600');
-            } else {
-                showStatusMessage(status, data.error || "Could not start Google auth.", "red");
-            }
-        } catch (error) {
-            showStatusMessage(status, "Cannot connect to server for Google auth.", "red");
-        }
-    });
-
-    window.addEventListener("message", (event) => {
-        if (event.data === "google-auth-success") {
-            showStatusMessage(status, "✅ Google Drive connected successfully!", "green");
-            connectDriveBtn.textContent = "✅ Google Drive Connected";
-            connectDriveBtn.disabled = true;
-        }
     });
 })();
