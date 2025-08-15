@@ -25,7 +25,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const backToMain = document.getElementById("backToMain");
     const searchBox = document.getElementById("searchNotes");
     const connectDriveBtn = document.getElementById("connectDriveBtn");
-    const BACKEND_BASE_URL = "https://savetext-0pk6-onrender-com/api";
+    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api"; // <-- CORRECTED URL
     let loggedInUser = null;
     let allNotes = [];
     let isEditing = null;
@@ -69,7 +69,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!isValidEmail(email)) return showStatusMessage(registerMsg, "Invalid email format.", "red");
         if (password !== confirmPassword) return showStatusMessage(registerMsg, "Passwords do not match.", "red");
         if (!isValidPassword(password)) return showStatusMessage(registerMsg, "Password: 8+ chars, with uppercase, lowercase, & symbol.", "red");
-        
+
         try {
             const res = await fetch(`${BACKEND_BASE_URL}/register`, {
                 method: "POST",
@@ -121,7 +121,7 @@ document.addEventListener("DOMContentLoaded", () => {
             showStatusMessage(loginMsg, "Cannot connect to the server.", "red");
         }
     });
-    
+
     // (Your logoutBtn listener is here, unchanged)
     // ...
     logoutBtn.addEventListener("click", () => {
@@ -170,7 +170,7 @@ document.addEventListener("DOMContentLoaded", () => {
     saveBtn.addEventListener("click", async () => {
         const title = noteTitleInput.value.trim();
         const text = textInput.value.trim();
-        
+
         if (!text || !title) return showStatusMessage(status, "Please enter a title and some text.", "red");
         if (!loggedInUser) return showStatusMessage(status, "You must be logged in to save.", "red");
 
@@ -225,7 +225,7 @@ document.addEventListener("DOMContentLoaded", () => {
             showStatusMessage(historyStatus, "Cannot connect to the server.", "red");
         }
     }
-    
+
     function handleEditNote(note) {
         isEditing = note.filename;
         mainSectionTitle.textContent = "Edit Your Note";
@@ -238,7 +238,7 @@ document.addEventListener("DOMContentLoaded", () => {
         showView(mainSection);
         window.scrollTo(0, 0);
     }
-    
+
     function resetMainForm() {
         isEditing = null;
         mainSectionTitle.textContent = "Save Your Text";
@@ -252,7 +252,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function fetchHistory() {
         if (!loggedInUser) return showStatusMessage(historyStatus, "Please login first.", "red");
-        
+
         showStatusMessage(historyStatus, "Loading...", "#444");
         historyList.innerHTML = "";
         try {
@@ -296,14 +296,14 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>
                 </div>
             `;
-            
+
             historyList.appendChild(noteDiv);
         });
 
         historyList.querySelectorAll('.edit-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const noteToEdit = allNotes.find(n => n.filename === btn.dataset.filename);
-                if(noteToEdit) handleEditNote(noteToEdit);
+                if (noteToEdit) handleEditNote(noteToEdit);
             });
         });
         historyList.querySelectorAll('.delete-btn').forEach(btn => {
