@@ -7,7 +7,6 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import click
 
-# ------------------ Basic Setup ------------------
 app = Flask(__name__)
 CORS(app)
 
@@ -15,24 +14,18 @@ CORS(app)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("FATAL: DATABASE_URL environment variable is not set.")
-
-# Fix URL prefix for psycopg2 compatibility
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 def get_db_connection():
-    """Create and return a new database connection."""
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
-# ------------------ Password Validation ------------------
+# Password validation
 def is_valid_password(password):
-    """Validate password complexity."""
-    # (at least one lowercase, one uppercase, one special char or underscore, at least 8 chars)
     return bool(re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$", password))
 
 # ------------------ Initialize Database ------------------
 def init_db():
-    """Initialize database tables if not present."""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -54,6 +47,7 @@ def init_db():
                         user_id INTEGER NOT NULL,
                         filename TEXT NOT NULL,
                         filecontent TEXT NOT NULL,
+                        -- Extend with tags, pinned columns if needed
                         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
                     )
                 """)
@@ -62,7 +56,6 @@ def init_db():
     except Exception as e:
         print("Error while initializing database:", e)
 
-# Flask CLI command for manual db init
 @app.cli.command("init-db")
 def init_db_command():
     init_db()
@@ -91,7 +84,7 @@ def register():
                 hashed_password = generate_password_hash(password)
                 cursor.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, hashed_password))
                 conn.commit()
-        return jsonify({"message": "Registration successful."}), 201
+                return jsonify({"message": "Registration successful."}), 201
     except Exception as e:
         print("Database error during register:", e)
         return jsonify({"error": "Database error."}), 500
@@ -137,13 +130,11 @@ def userdata():
                     return jsonify({"message": "Note saved successfully."}), 201
                 elif request.method == "GET":
                     email = (request.args.get("emailid") or "").strip().lower()
-                    print(f"History GET for {email}")  # Debug log for Render logs
                     cursor.execute(
                         "SELECT filename, filecontent FROM notes WHERE user_id = (SELECT id FROM users WHERE email = %s)",
                         (email,),
                     )
                     notes = cursor.fetchall()
-                    print("History result:", notes)  # Debug log for Render logs
                     return jsonify([dict(row) for row in notes]), 200
     except Exception as e:
         print("Database error during userdata:", e)
@@ -171,6 +162,32 @@ def delete_note():
                 return jsonify({"message": "Note deleted successfully."}), 200
     except Exception as e:
         print("Database error during delete:", e)
+        return jsonify({"error": "Database error."}), 500
+
+# ----------- NEW: Edit Notes Endpoint -----------
+@app.route("/api/edit", methods=["POST"])
+def edit_note():
+    data = request.get_json()
+    email = (data.get("emailid") or "").strip().lower()
+    filename = data.get("filename")
+    new_content = data.get("filecontent")
+    if not email or not filename or new_content is None:
+        return jsonify({"error": "All fields are required."}), 400
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+                user = cursor.fetchone()
+                if not user:
+                    return jsonify({"error": "User not found."}), 404
+                cursor.execute(
+                    "UPDATE notes SET filecontent = %s WHERE user_id = %s AND filename = %s",
+                    (new_content, user[0], filename),
+                )
+                conn.commit()
+                return jsonify({"message": "Note updated successfully."}), 200
+    except Exception as e:
+        print("Database error during edit:", e)
         return jsonify({"error": "Database error."}), 500
 
 if __name__ == "__main__":
