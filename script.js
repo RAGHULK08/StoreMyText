@@ -1,6 +1,4 @@
 document.addEventListener("DOMContentLoaded", () => {
-    // (All your element selectors are here, unchanged)
-    // ...
     const loginSection = document.getElementById("loginSection");
     const registerSection = document.getElementById("registerSection");
     const mainSection = document.getElementById("mainSection");
@@ -24,8 +22,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const historyStatus = document.getElementById("historyStatus");
     const backToMain = document.getElementById("backToMain");
     const searchBox = document.getElementById("searchNotes");
-    const connectDriveBtn = document.getElementById("connectDriveBtn");
-    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api"; // <-- CORRECTED URL
+    // const connectDriveBtn = document.getElementById("connectDriveBtn"); // <-- REMOVED
+    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api"; 
     let loggedInUser = null;
     let allNotes = [];
     let isEditing = null;
@@ -48,8 +46,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // (Your other helper functions are here)
-    // ...
     const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     const isValidPassword = (password) => /^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$/.test(password);
 
@@ -58,8 +54,7 @@ document.addEventListener("DOMContentLoaded", () => {
     historyBtn.addEventListener("click", () => { fetchHistory(); showView(historySection); });
     backToMain.addEventListener("click", () => showView(mainSection));
     textInput.addEventListener("input", () => { charCounter.textContent = `${textInput.value.length} characters`; });
-    // (Your registerForm listener is here, unchanged)
-    // ...
+    
     registerForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("registerEmail").value.trim().toLowerCase();
@@ -87,12 +82,12 @@ document.addEventListener("DOMContentLoaded", () => {
             showStatusMessage(registerMsg, "Cannot connect to the server.", "red");
         }
     });
-    // --- MODIFIED loginForm event listener ---
+    
     loginForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("loginEmail").value.trim().toLowerCase();
         const password = document.getElementById("loginPassword").value.trim();
-        loggedInUser = email; // Set user email early for the auth flow
+        loggedInUser = email;
 
         try {
             const res = await fetch(`${BACKEND_BASE_URL}/login`, {
@@ -102,28 +97,23 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             const data = await res.json();
             if (res.ok) {
-                // Login is successful, now check if Google Drive is connected
                 if (data.is_google_connected) {
-                    // If already connected, go straight to the main app
                     showView(mainSection);
                 } else {
-                    // If not connected, start the Google Drive auth flow automatically
                     showStatusMessage(loginMsg, "Login successful! Please connect your Google Drive to continue.", "blue");
                     connectToGoogleDrive();
                 }
                 loginForm.reset();
             } else {
-                loggedInUser = null; // Clear user if login fails
+                loggedInUser = null;
                 showStatusMessage(loginMsg, data.error || "Login failed.", "red");
             }
         } catch (error) {
-            loggedInUser = null; // Clear user on network error
+            loggedInUser = null;
             showStatusMessage(loginMsg, "Cannot connect to the server.", "red");
         }
     });
 
-    // (Your logoutBtn listener is here, unchanged)
-    // ...
     logoutBtn.addEventListener("click", () => {
         if (confirm("Are you sure you want to logout?")) {
             loggedInUser = null;
@@ -133,7 +123,7 @@ document.addEventListener("DOMContentLoaded", () => {
             showView(loginSection);
         }
     });
-    // --- NEW function to start Google auth ---
+    
     async function connectToGoogleDrive() {
         if (!loggedInUser) {
             showStatusMessage(status, "An error occurred. Please log in again.", "red");
@@ -143,7 +133,6 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch(`${BACKEND_BASE_URL}/auth/google/start?emailid=${loggedInUser}`);
             const data = await res.json();
             if (res.ok) {
-                // Open Google's auth page in a new popup window
                 window.open(data.authorization_url, '_blank', 'width=500,height=600');
             } else {
                 showStatusMessage(loginMsg, data.error || "Could not start Google auth.", "red");
@@ -153,20 +142,15 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // --- MODIFIED window listener to show main section after auth ---
     window.addEventListener("message", (event) => {
         if (event.data === "google-auth-success") {
-            // After successful Google auth, show the main app screen
             showStatusMessage(status, "✅ Google Drive connected successfully!", "green");
             showView(mainSection);
         }
     });
 
-    // The connectDriveBtn is now a fallback, so it just calls the same function
-    connectDriveBtn.addEventListener("click", connectToGoogleDrive);
+    // connectDriveBtn.addEventListener("click", connectToGoogleDrive); // <-- REMOVED
 
-    // (The rest of your functions like saveBtn, handleDeleteNote, fetchHistory, etc., are all correct and unchanged)
-    // ...
     saveBtn.addEventListener("click", async () => {
         const title = noteTitleInput.value.trim();
         const text = textInput.value.trim();
