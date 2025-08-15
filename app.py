@@ -19,13 +19,19 @@ from googleapiclient.errors import HttpError
 # --- Basic Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# --- Environment Variable Check ---
+# This will check for required variables on startup and provide clear errors.
+required_env_vars = ["DATABASE_URL", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "REDIRECT_URI"]
+for var in required_env_vars:
+    if not os.environ.get(var):
+        logging.error(f"FATAL ERROR: Environment variable '{var}' is not set.")
+        raise RuntimeError(f"FATAL ERROR: Environment variable '{var}' is not set.")
+
 app = Flask(__name__)
 CORS(app)
 
 # ------------------ Database Configuration ------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("FATAL: DATABASE_URL environment variable is not set.")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -37,8 +43,6 @@ def get_db_connection():
         logging.error(f"CRITICAL: Could not connect to the database: {e}")
         raise
 
-# (Your other functions like is_valid_password, init_db, etc. are here)
-# ...
 # Password validation
 def is_valid_password(password):
     return bool(re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$", password))
@@ -48,7 +52,7 @@ def init_db():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                logging.info("Creating users table if it doesn't exist...")
+                logging.info("Ensuring database tables exist...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         id SERIAL PRIMARY KEY,
@@ -59,7 +63,6 @@ def init_db():
                         google_refresh_token TEXT
                     )
                 """)
-                logging.info("Creating notes table if it doesn't exist...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS notes (
                         id SERIAL PRIMARY KEY,
@@ -73,14 +76,15 @@ def init_db():
                     )
                 """)
                 conn.commit()
-                logging.info("Database tables ensured.")
+                logging.info("Database tables are ready.")
     except Exception as e:
-        logging.error(f"Error while initializing database: {e}")
+        logging.error(f"Error during database initialization: {e}")
 
 @app.cli.command("init-db")
 def init_db_command():
     init_db()
     click.echo("Initialized the database.")
+
 # ------------------ Google OAuth 2.0 Setup ------------------
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 REDIRECT_URI = os.environ.get("REDIRECT_URI")
@@ -100,10 +104,8 @@ def get_google_flow():
 # ------------------ API Endpoints ------------------
 @app.route("/")
 def health_check():
-    return "Backend is running and accessible."
+    return "Backend is running."
 
-# (Your /api/register route is here, unchanged)
-# ...
 @app.route("/api/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -126,7 +128,7 @@ def register():
     except Exception as e:
         logging.error(f"DATABASE ERROR during registration: {e}")
         return jsonify({"error": "Server error during registration."}), 500
-# --- MODIFIED /api/login ROUTE ---
+
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -136,32 +138,25 @@ def login():
         return jsonify({"error": "Invalid email or password."}), 401
     try:
         with get_db_connection() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
                 cursor.execute("SELECT password_hash, google_refresh_token FROM users WHERE email = %s", (email,))
                 user = cursor.fetchone()
-                
-                # Check password
-                if not user or not check_password_hash(user[0], password):
-                    logging.warning(f"Failed login attempt for {email}")
+                if not user or not check_password_hash(user["password_hash"], password):
                     return jsonify({"error": "Invalid email or password."}), 401
-
-                # Check if Google Drive is connected by looking for a refresh token
-                is_google_connected = bool(user[1])
                 
-                logging.info(f"Successful login for {email}. Google connected: {is_google_connected}")
+                is_google_connected = bool(user["google_refresh_token"])
                 return jsonify({
                     "message": "Login successful.",
-                    "is_google_connected": is_google_connected # Send status to frontend
+                    "is_google_connected": is_google_connected
                 }), 200
-
     except Exception as e:
         logging.error(f"DATABASE ERROR during login: {e}")
         return jsonify({"error": "Server error during login."}), 500
 
-# (Your /api/userdata, /api/delete, /api/edit routes are here, unchanged)
-# ...
+# Other routes (userdata, delete, edit) are unchanged
 @app.route("/api/userdata", methods=["POST", "GET"])
 def userdata():
+    # This function is correct and does not need changes
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=DictCursor) as cursor:
@@ -191,6 +186,7 @@ def userdata():
 
 @app.route("/api/delete", methods=["DELETE"])
 def delete_note():
+    # This function is correct and does not need changes
     data = request.get_json()
     email = (data.get("emailid") or "").strip().lower()
     filename = data.get("filename")
@@ -212,6 +208,7 @@ def delete_note():
 
 @app.route("/api/edit", methods=["POST"])
 def edit_note():
+    # This function is correct and does not need changes
     data = request.get_json()
     email = (data.get("emailid") or "").strip().lower()
     filename = data.get("filename")
@@ -232,8 +229,7 @@ def edit_note():
     except Exception as e:
         logging.error(f"DATABASE ERROR during edit: {e}")
         return jsonify({"error": "A database error occurred."}), 500
-# (Your Google auth routes are here, unchanged)
-# ...
+
 @app.route('/api/auth/google/start')
 def google_auth_start():
     email = request.args.get('emailid')
@@ -262,5 +258,6 @@ def google_auth_callback():
     except Exception as e:
         logging.error(f"Error in Google auth callback: {e}")
         return "An error occurred during authentication.", 500
+
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
