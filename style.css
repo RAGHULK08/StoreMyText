@@ -245,3 +245,15 @@ button:hover {
     from { opacity: 0; transform: translateY(15px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+.drive-btn {
+    background: #4285F4; /* Google Blue */
+    margin-top: 15px;
+}
+.drive-btn:hover {
+    filter: brightness(1.1);
+}
+.drive-btn:disabled {
+    background: #8f8f8f;
+    cursor: not-allowed;
+}
