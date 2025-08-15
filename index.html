@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
+    <meta charset="UTF--8">
     <title>Save Text to Cloud</title>
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
     <header>
         <h1>Save Text to Cloud</h1>
@@ -12,12 +14,12 @@
     </header>
 
     <main>
-        <!-- Login Section -->
         <section id="loginSection" class="view">
             <h2>Login</h2>
             <form id="loginForm">
                 <input type="email" id="loginEmail" placeholder="Email" autocomplete="username" required>
-                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required>
+                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password"
+                    required>
                 <button type="submit">Login</button>
             </form>
             <div id="loginMsg" class="message"></div>
@@ -26,13 +28,14 @@
             </div>
         </section>
 
-        <!-- Register Section -->
         <section id="registerSection" class="view">
             <h2>Register</h2>
             <form id="registerForm">
                 <input type="email" id="registerEmail" placeholder="Email" autocomplete="username" required>
-                <input type="password" id="registerPassword" placeholder="Password" autocomplete="new-password" required>
-                <input type="password" id="registerConfirmPassword" placeholder="Confirm Password" autocomplete="new-password" required>
+                <input type="password" id="registerPassword" placeholder="Password" autocomplete="new-password"
+                    required>
+                <input type="password" id="registerConfirmPassword" placeholder="Confirm Password"
+                    autocomplete="new-password" required>
                 <button type="submit">Register</button>
             </form>
             <div id="registerMsg" class="message"></div>
@@ -41,21 +44,26 @@
             </div>
         </section>
 
-        <!-- Main Section for Saving Text -->
         <section id="mainSection" class="view">
-            <h2>Save Your Text</h2>
-            <textarea id="textInput" placeholder="Type your text here..."></textarea>
+            <h2 id="mainSectionTitle">Save Your Text</h2>
+            <input type="text" id="noteTitle" placeholder="Note Title..." style="margin-bottom: 12px;">
+            <div class="textarea-container">
+                <textarea id="textInput" placeholder="Type your text here..."></textarea>
+                <div id="charCounter" class="char-counter">0 characters</div>
+            </div>
             <button id="saveBtn">Save to Cloud</button>
+            <button id="cancelEditBtn" style="display:none;">Cancel Edit</button>
             <div class="btn-row">
                 <button id="historyBtn">View History</button>
             </div>
             <div id="status" class="message"></div>
         </section>
 
-        <!-- History Section -->
+
         <section id="historySection" class="view">
             <h2>Your Saved Notes</h2>
-            <input type="text" id="searchNotes" placeholder="Search notes..." style="margin-bottom:12px;width:100%;padding:8px;">
+            <input type="text" id="searchNotes" placeholder="Search by title or content..."
+                style="margin-bottom:12px;width:100%;padding:8px;">
             <div id="historyStatus" class="message"></div>
             <div id="historyList"></div>
             <div class="btn-row">
@@ -65,4 +73,5 @@
     </main>
     <script src="script.js"></script>
 </body>
+
 </html>
