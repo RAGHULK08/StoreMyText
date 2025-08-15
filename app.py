@@ -105,10 +105,29 @@ def register():
                 return jsonify({"message": "Registration successful."}), 201
     except Exception as e:
         logging.error(f"DATABASE ERROR during registration for {email}: {e}")
-        return jsonify({"error": "Could not connect to the database."}), 500
+        return jsonify({"error": "A database error occurred during registration."}), 500
 
-# (Add similar logging to other routes: login, delete, edit)
-# ...
+@app.route("/api/login", methods=["POST"])
+def login():
+    logging.info("Received request to /api/login")
+    data = request.get_json()
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+    if not email or not password:
+        return jsonify({"error": "Invalid email or password."}), 401
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
+                user = cursor.fetchone()
+                if user and check_password_hash(user[0], password):
+                    logging.info(f"Successful login for user: {email}")
+                    return jsonify({"message": "Login successful."}), 200
+                logging.warning(f"Failed login attempt for user: {email}")
+                return jsonify({"error": "Invalid email or password."}), 401
+    except Exception as e:
+        logging.error(f"DATABASE ERROR during login for {email}: {e}")
+        return jsonify({"error": "A database error occurred during login."}), 500
 
 @app.route("/api/userdata", methods=["POST", "GET"])
 def userdata():
@@ -119,7 +138,9 @@ def userdata():
                 if request.method == "POST":
                     data = request.get_json()
                     email = (data.get("emailid") or "").strip().lower()
-                    # ... (rest of the POST logic is the same)
+                    filename = data.get("filename")
+                    title = data.get("title", "Untitled").strip()
+                    filecontent = data.get("filecontent")
                     logging.info(f"Saving note for user: {email}")
                     cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
                     user = cursor.fetchone()
@@ -127,7 +148,7 @@ def userdata():
                     
                     cursor.execute(
                         "INSERT INTO notes (user_id, filename, title, filecontent) VALUES (%s, %s, %s, %s)",
-                        (user["id"], data.get("filename"), data.get("title", "Untitled").strip(), data.get("filecontent")),
+                        (user["id"], filename, title, filecontent),
                     )
                     conn.commit()
                     return jsonify({"message": "Note saved successfully."}), 201
@@ -135,14 +156,17 @@ def userdata():
                 elif request.method == "GET":
                     email = (request.args.get("emailid") or "").strip().lower()
                     logging.info(f"Fetching notes for user: {email}")
-                    # ... (rest of the GET logic is the same)
                     cursor.execute(
-                        "SELECT filename, title, filecontent, updated_at FROM notes WHERE user_id = (SELECT id FROM users WHERE email = %s) ORDER BY updated_at DESC",
+                        """
+                        SELECT filename, title, filecontent, updated_at 
+                        FROM notes 
+                        WHERE user_id = (SELECT id FROM users WHERE email = %s)
+                        ORDER BY updated_at DESC
+                        """,
                         (email,),
                     )
                     notes = [dict(row) for row in cursor.fetchall()]
                     return jsonify(notes), 200
-
     except psycopg2.Error as db_err:
         logging.error(f"DATABASE SPECIFIC ERROR on /userdata: {db_err}")
         return jsonify({"error": "A database query failed."}), 500
@@ -150,8 +174,69 @@ def userdata():
         logging.error(f"GENERAL ERROR on /userdata: {e}")
         return jsonify({"error": "An unexpected server error occurred."}), 500
 
-# (Ensure other routes like delete and edit also have logging)
-# ...
+@app.route("/api/delete", methods=["DELETE"])
+def delete_note():
+    logging.info("Received request to /api/delete")
+    data = request.get_json()
+    email = (data.get("emailid") or "").strip().lower()
+    filename = data.get("filename")
+    if not email or not filename:
+        return jsonify({"error": "Email and filename are required."}), 400
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+                user = cursor.fetchone()
+                if not user: return jsonify({"error": "User not found."}), 404
+                
+                cursor.execute(
+                    "DELETE FROM notes WHERE user_id = %s AND filename = %s",
+                    (user[0], filename),
+                )
+                conn.commit()
+                if cursor.rowcount == 0:
+                    return jsonify({"error": "Note not found or already deleted."}), 404
+                logging.info(f"Note '{filename}' deleted for user {email}")
+                return jsonify({"message": "Note deleted successfully."}), 200
+    except Exception as e:
+        logging.error(f"DATABASE ERROR during delete: {e}")
+        return jsonify({"error": "A database error occurred."}), 500
+
+@app.route("/api/edit", methods=["POST"])
+def edit_note():
+    logging.info("Received request to /api/edit")
+    data = request.get_json()
+    email = (data.get("emailid") or "").strip().lower()
+    filename = data.get("filename")
+    title = data.get("title", "Untitled").strip()
+    new_content = data.get("filecontent")
+    
+    if not email or not filename or new_content is None:
+        return jsonify({"error": "All fields are required."}), 400
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+                user = cursor.fetchone()
+                if not user: return jsonify({"error": "User not found."}), 404
+                
+                cursor.execute(
+                    """
+                    UPDATE notes 
+                    SET title = %s, filecontent = %s, updated_at = NOW() 
+                    WHERE user_id = %s AND filename = %s
+                    """,
+                    (title, new_content, user[0], filename),
+                )
+                conn.commit()
+                if cursor.rowcount == 0:
+                    return jsonify({"error": "Note not found."}), 404
+                logging.info(f"Note '{filename}' updated for user {email}")
+                return jsonify({"message": "Note updated successfully."}), 200
+    except Exception as e:
+        logging.error(f"DATABASE ERROR during edit: {e}")
+        return jsonify({"error": "A database error occurred."}), 500
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
