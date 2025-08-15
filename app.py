@@ -32,12 +32,13 @@ if DATABASE_URL.startswith("postgres://"):
 def get_db_connection():
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-        logging.info("Database connection successful.")
         return conn
     except psycopg2.OperationalError as e:
         logging.error(f"CRITICAL: Could not connect to the database: {e}")
         raise
 
+# (Your other functions like is_valid_password, init_db, etc. are here)
+# ...
 # Password validation
 def is_valid_password(password):
     return bool(re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$", password))
@@ -80,7 +81,6 @@ def init_db():
 def init_db_command():
     init_db()
     click.echo("Initialized the database.")
-
 # ------------------ Google OAuth 2.0 Setup ------------------
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 REDIRECT_URI = os.environ.get("REDIRECT_URI")
@@ -102,11 +102,8 @@ def get_google_flow():
 def health_check():
     return "Backend is running and accessible."
 
-@app.route("/api/test")
-def test_endpoint():
-    logging.info("Test endpoint was hit successfully.")
-    return jsonify({"message": "Backend is responding correctly!"})
-
+# (Your /api/register route is here, unchanged)
+# ...
 @app.route("/api/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -129,10 +126,9 @@ def register():
     except Exception as e:
         logging.error(f"DATABASE ERROR during registration: {e}")
         return jsonify({"error": "Server error during registration."}), 500
-
+# --- MODIFIED /api/login ROUTE ---
 @app.route("/api/login", methods=["POST"])
 def login():
-    logging.info("Login endpoint hit.")
     data = request.get_json()
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
@@ -141,18 +137,29 @@ def login():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
+                cursor.execute("SELECT password_hash, google_refresh_token FROM users WHERE email = %s", (email,))
                 user = cursor.fetchone()
-                if user and check_password_hash(user[0], password):
-                    logging.info(f"Successful login for {email}")
-                    return jsonify({"message": "Login successful."}), 200
-                else:
+                
+                # Check password
+                if not user or not check_password_hash(user[0], password):
                     logging.warning(f"Failed login attempt for {email}")
                     return jsonify({"error": "Invalid email or password."}), 401
+
+                # Check if Google Drive is connected by looking for a refresh token
+                is_google_connected = bool(user[1])
+                
+                logging.info(f"Successful login for {email}. Google connected: {is_google_connected}")
+                return jsonify({
+                    "message": "Login successful.",
+                    "is_google_connected": is_google_connected # Send status to frontend
+                }), 200
+
     except Exception as e:
         logging.error(f"DATABASE ERROR during login: {e}")
         return jsonify({"error": "Server error during login."}), 500
 
+# (Your /api/userdata, /api/delete, /api/edit routes are here, unchanged)
+# ...
 @app.route("/api/userdata", methods=["POST", "GET"])
 def userdata():
     try:
@@ -225,7 +232,8 @@ def edit_note():
     except Exception as e:
         logging.error(f"DATABASE ERROR during edit: {e}")
         return jsonify({"error": "A database error occurred."}), 500
-
+# (Your Google auth routes are here, unchanged)
+# ...
 @app.route('/api/auth/google/start')
 def google_auth_start():
     email = request.args.get('emailid')
@@ -254,6 +262,5 @@ def google_auth_callback():
     except Exception as e:
         logging.error(f"Error in Google auth callback: {e}")
         return "An error occurred during authentication.", 500
-
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
