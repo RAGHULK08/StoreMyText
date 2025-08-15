@@ -1,5 +1,5 @@
 document.addEventListener("DOMContentLoaded", () => {
-    // Element selectors
+    // --- Element Selectors ---
     const loginSection = document.getElementById("loginSection");
     const registerSection = document.getElementById("registerSection");
     const mainSection = document.getElementById("mainSection");
@@ -10,8 +10,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const registerMsg = document.getElementById("registerMsg");
     const goToRegister = document.getElementById("goToRegister");
     const goToLogin = document.getElementById("goToLogin");
+    const mainSectionTitle = document.getElementById("mainSectionTitle");
+    const noteTitleInput = document.getElementById("noteTitle");
     const textInput = document.getElementById("textInput");
+    const charCounter = document.getElementById("charCounter");
     const saveBtn = document.getElementById("saveBtn");
+    const cancelEditBtn = document.getElementById("cancelEditBtn");
     const historyBtn = document.getElementById("historyBtn");
     const logoutBtn = document.getElementById("logoutBtn");
     const status = document.getElementById("status");
@@ -20,55 +24,45 @@ document.addEventListener("DOMContentLoaded", () => {
     const backToMain = document.getElementById("backToMain");
     const searchBox = document.getElementById("searchNotes");
 
+    // --- API and State Management ---
     const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api";
-
     let loggedInUser = null;
+    let allNotes = [];
+    let isEditing = null; // Holds the filename of the note being edited
 
-    // Initial view: login page
+    // --- Initial View ---
     showView(loginSection);
 
+    // --- View Management ---
     function showView(view) {
         [loginSection, registerSection, mainSection, historySection].forEach(
             v => v.classList.remove("active")
         );
         view.classList.add("active");
-        showLogout(view === mainSection || view === historySection);
+        logoutBtn.style.display = (view === mainSection || view === historySection) ? "inline-block" : "none";
     }
 
-    function showLogout(show) {
-        logoutBtn.style.display = show ? "inline-block" : "none";
-    }
-
-    function showStatusMessage(element, msg, color) {
+    // --- Utility Functions ---
+    function showStatusMessage(element, msg, color, duration = 3000) {
         element.textContent = msg;
         element.style.color = color || "#333";
         if (msg) {
-            setTimeout(() => {
-                element.textContent = "";
-            }, 3000);
+            setTimeout(() => { element.textContent = ""; }, duration);
         }
     }
 
-    function isValidEmail(email) {
-        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    }
+    const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    const isValidPassword = (password) => /^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$/.test(password);
 
-    function isValidPassword(password) {
-        return /^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$/.test(password);
-    }
+    // --- Event Listeners ---
+    goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView(registerSection); });
+    goToLogin.addEventListener("click", (e) => { e.preventDefault(); showView(loginSection); });
+    historyBtn.addEventListener("click", () => { fetchHistory(); showView(historySection); });
+    backToMain.addEventListener("click", () => showView(mainSection));
+    textInput.addEventListener("input", () => { charCounter.textContent = `${textInput.value.length} characters`; });
 
-    // Switch forms
-    goToRegister.addEventListener("click", e => {
-        e.preventDefault();
-        showView(registerSection);
-    });
-    goToLogin.addEventListener("click", e => {
-        e.preventDefault();
-        showView(loginSection);
-    });
-
-    // Register
-    registerForm.addEventListener("submit", async e => {
+    // --- User Authentication ---
+    registerForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("registerEmail").value.trim().toLowerCase();
         const password = document.getElementById("registerPassword").value.trim();
@@ -76,24 +70,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (!isValidEmail(email)) return showStatusMessage(registerMsg, "Invalid email format.", "red");
         if (password !== confirmPassword) return showStatusMessage(registerMsg, "Passwords do not match.", "red");
-        if (!isValidPassword(password)) {
-            return showStatusMessage(registerMsg, "Password: 8+ chars, with uppercase, lowercase, & symbol.", "red");
-        }
+        if (!isValidPassword(password)) return showStatusMessage(registerMsg, "Password: 8+ chars, with uppercase, lowercase, & symbol.", "red");
+        
         try {
             const res = await fetch(`${BACKEND_BASE_URL}/register`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password }),
             });
+            const data = await res.json();
             if (res.ok) {
                 showStatusMessage(registerMsg, "Registration successful! Please login.", "green");
-                setTimeout(() => {
-                    showView(loginSection);
-                    registerForm.reset();
-                    showStatusMessage(registerMsg, "");
-                }, 1500);
+                setTimeout(() => { showView(loginSection); registerForm.reset(); }, 1500);
             } else {
-                const data = await res.json();
                 showStatusMessage(registerMsg, data.error || "Registration failed.", "red");
             }
         } catch (error) {
@@ -101,8 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // Login
-    loginForm.addEventListener("submit", async e => {
+    loginForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("loginEmail").value.trim().toLowerCase();
         const password = document.getElementById("loginPassword").value.trim();
@@ -113,13 +101,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password }),
             });
+            const data = await res.json();
             if (res.ok) {
                 loggedInUser = email;
                 showView(mainSection);
                 loginForm.reset();
-                showStatusMessage(loginMsg, "");
             } else {
-                const data = await res.json();
                 showStatusMessage(loginMsg, data.error || "Login failed.", "red");
             }
         } catch (error) {
@@ -127,57 +114,118 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // Logout
     logoutBtn.addEventListener("click", () => {
         if (confirm("Are you sure you want to logout?")) {
             loggedInUser = null;
-            textInput.value = "";
+            allNotes = [];
+            resetMainForm();
             historyList.innerHTML = "";
             showView(loginSection);
         }
     });
-
-    // Save note
+    
+    // --- Note Management ---
     saveBtn.addEventListener("click", async () => {
+        const title = noteTitleInput.value.trim();
         const text = textInput.value.trim();
-        if (!text) return showStatusMessage(status, "Please enter some text to save.", "red");
+        
+        if (!text || !title) return showStatusMessage(status, "Please enter a title and some text.", "red");
         if (!loggedInUser) return showStatusMessage(status, "You must be logged in to save.", "red");
-        showStatusMessage(status, "Saving...", "#444");
+
+        if (isEditing) {
+            // Update existing note
+            showStatusMessage(status, "Updating...", "#444");
+            try {
+                const payload = { emailid: loggedInUser, filename: isEditing, title: title, filecontent: text };
+                const res = await fetch(`${BACKEND_BASE_URL}/edit`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    showStatusMessage(status, "Note updated successfully ✅", "green");
+                    resetMainForm();
+                } else {
+                    const data = await res.json();
+                    showStatusMessage(status, data.error || "Error updating note!", "red");
+                }
+            } catch (e) {
+                showStatusMessage(status, "Network error! Could not connect.", "red");
+            }
+
+        } else {
+            // Save new note
+            showStatusMessage(status, "Saving...", "#444");
+            try {
+                const payload = { emailid: loggedInUser, filename: `note_${Date.now()}.txt`, title: title, filecontent: text };
+                const res = await fetch(`${BACKEND_BASE_URL}/userdata`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    showStatusMessage(status, "Saved to cloud ✅", "green");
+                    resetMainForm();
+                } else {
+                    showStatusMessage(status, "Error saving!", "red");
+                }
+            } catch (e) {
+                showStatusMessage(status, "Network error! Could not connect.", "red");
+            }
+        }
+    });
+
+    cancelEditBtn.addEventListener("click", resetMainForm);
+
+    async function handleDeleteNote(filename) {
+        if (!confirm(`Are you sure you want to delete this note?`)) return;
+        showStatusMessage(historyStatus, "Deleting note...", "#444");
         try {
-            const payload = { emailid: loggedInUser, filename: `note_${Date.now()}.txt`, filecontent: text };
-            const res = await fetch(`${BACKEND_BASE_URL}/userdata`, {
-                method: "POST",
+            const res = await fetch(`${BACKEND_BASE_URL}/delete`, {
+                method: "DELETE",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
+                body: JSON.stringify({ emailid: loggedInUser, filename })
             });
             if (res.ok) {
-                showStatusMessage(status, "Saved to cloud ✅", "green");
-                textInput.value = "";
+                showStatusMessage(historyStatus, "Note deleted successfully!", "green");
+                fetchHistory(); // Refresh list
             } else {
-                showStatusMessage(status, "Error saving!", "red");
+                const data = await res.json();
+                showStatusMessage(historyStatus, data.error || "Failed to delete note.", "red");
             }
-        } catch (e) {
-            showStatusMessage(status, "Network error! Could not connect to the server.", "red");
+        } catch (err) {
+            showStatusMessage(historyStatus, "Cannot connect to the server.", "red");
         }
-    });
+    }
+    
+    function handleEditNote(note) {
+        isEditing = note.filename;
+        mainSectionTitle.textContent = "Edit Your Note";
+        noteTitleInput.value = note.title;
+        textInput.value = note.filecontent;
+        saveBtn.textContent = "Update Note";
+        cancelEditBtn.style.display = "block";
+        historyBtn.style.display = "none";
+        charCounter.textContent = `${textInput.value.length} characters`;
+        showView(mainSection);
+        window.scrollTo(0, 0);
+    }
+    
+    function resetMainForm() {
+        isEditing = null;
+        mainSectionTitle.textContent = "Save Your Text";
+        noteTitleInput.value = "";
+        textInput.value = "";
+        saveBtn.textContent = "Save to Cloud";
+        cancelEditBtn.style.display = "none";
+        historyBtn.style.display = "block";
+        charCounter.textContent = "0 characters";
+    }
 
-    // Show history -- no password prompt
-    historyBtn.addEventListener("click", () => {
-        historyList.innerHTML = "";
-        showStatusMessage(historyStatus, "");
-        fetchHistory();
-        showView(historySection);
-    });
-
-    backToMain.addEventListener("click", () => showView(mainSection));
-
-    // Fetch notes & render history list, integrated with search
-    let allNotes = [];
+    // --- History & Search ---
     async function fetchHistory() {
-        if (!loggedInUser) {
-            showStatusMessage(historyStatus, "Please login first.", "red");
-            return;
-        }
+        if (!loggedInUser) return showStatusMessage(historyStatus, "Please login first.", "red");
+        
         showStatusMessage(historyStatus, "Loading...", "#444");
         historyList.innerHTML = "";
         try {
@@ -187,7 +235,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!res.ok) throw new Error("Server responded with an error");
             allNotes = await res.json();
             renderHistory(allNotes);
-            showStatusMessage(historyStatus, "", "green");
+            showStatusMessage(historyStatus, "");
         } catch (err) {
             showStatusMessage(historyStatus, "Failed to fetch history.", "red");
         }
@@ -196,101 +244,53 @@ document.addEventListener("DOMContentLoaded", () => {
     function renderHistory(notes) {
         historyList.innerHTML = "";
         if (!notes.length) {
-            historyList.innerHTML = "No saved notes found.";
+            historyList.innerHTML = "<p>No saved notes found.</p>";
             return;
         }
         notes.forEach(note => {
             const noteDiv = document.createElement("div");
             noteDiv.className = "history-item";
 
-            const filenameDiv = document.createElement("strong");
-            filenameDiv.textContent = note.filename + ": ";
+            const formattedDate = new Date(note.updated_at).toLocaleString('en-US', {
+                dateStyle: 'medium',
+                timeStyle: 'short'
+            });
 
-            const noteContent = document.createElement("span");
-            noteContent.textContent = note.filecontent;
-
-            // Edit button
-            const editBtn = document.createElement("button");
-            editBtn.className = "edit-btn";
-            editBtn.textContent = "Edit";
-            editBtn.onclick = () => handleEditNote(note.filename, note.filecontent);
-
-            // Delete button
-            const deleteBtn = document.createElement("button");
-            deleteBtn.className = "delete-btn";
-            deleteBtn.textContent = "Delete";
-            deleteBtn.onclick = () => handleDeleteNote(note.filename);
-
-            noteDiv.appendChild(filenameDiv);
-            noteDiv.appendChild(noteContent);
-            noteDiv.appendChild(editBtn);
-            noteDiv.appendChild(deleteBtn);
-
+            noteDiv.innerHTML = `
+                <div class="history-item-header">
+                    <span class="history-item-title">${note.title}</span>
+                </div>
+                <p class="history-item-content">${note.filecontent}</p>
+                <div class="history-item-footer">
+                    <span>Last updated: ${formattedDate}</span>
+                    <div class="history-item-actions">
+                        <button class="edit-btn" data-filename="${note.filename}">Edit</button>
+                        <button class="delete-btn" data-filename="${note.filename}">Delete</button>
+                    </div>
+                </div>
+            `;
+            
             historyList.appendChild(noteDiv);
+        });
+
+        // Add event listeners after rendering
+        historyList.querySelectorAll('.edit-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const noteToEdit = allNotes.find(n => n.filename === btn.dataset.filename);
+                if(noteToEdit) handleEditNote(noteToEdit);
+            });
+        });
+        historyList.querySelectorAll('.delete-btn').forEach(btn => {
+            btn.addEventListener('click', () => handleDeleteNote(btn.dataset.filename));
         });
     }
 
-    async function handleEditNote(filename, oldContent) {
-        const newContent = prompt(
-            "Edit your note:", oldContent
+    searchBox.addEventListener("input", function () {
+        const searchTerm = this.value.trim().toLowerCase();
+        const filteredNotes = allNotes.filter(note =>
+            note.title.toLowerCase().includes(searchTerm) ||
+            note.filecontent.toLowerCase().includes(searchTerm)
         );
-        if (newContent === null || newContent === oldContent) return;
-        showStatusMessage(historyStatus, "Updating...", "#444");
-        try {
-            const res = await fetch(`${BACKEND_BASE_URL}/edit`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    emailid: loggedInUser,
-                    filename: filename,
-                    filecontent: newContent
-                })
-            });
-            const data = await res.json();
-            if (res.ok) {
-                showStatusMessage(historyStatus, "Note updated!", "green");
-                fetchHistory();
-            } else {
-                showStatusMessage(historyStatus, data.error || "Update failed.", "red");
-            }
-        } catch (e) {
-            showStatusMessage(historyStatus, "Cannot connect to the server.", "red");
-        }
-    }
-
-    async function handleDeleteNote(filename) {
-        if (!loggedInUser) {
-            showStatusMessage(historyStatus, "You are not logged in.", "red");
-            return;
-        }
-        if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
-        showStatusMessage(historyStatus, "Deleting note...", "#444");
-        try {
-            const res = await fetch(`${BACKEND_BASE_URL}/delete`, {
-                method: "DELETE",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ emailid: loggedInUser, filename })
-            });
-            const data = await res.json();
-            if (res.ok) {
-                showStatusMessage(historyStatus, "Note deleted successfully!", "green");
-                fetchHistory();
-            } else {
-                showStatusMessage(historyStatus, data.error || "Failed to delete note.", "red");
-            }
-        } catch (err) {
-            showStatusMessage(historyStatus, "Cannot connect to the server.", "red");
-        }
-    }
-
-    // Search notes (live filter)
-    searchBox?.addEventListener("input", function() {
-        const search = this.value.trim().toLowerCase();
-        renderHistory(
-            allNotes.filter(note =>
-                note.filename.toLowerCase().includes(search) ||
-                note.filecontent.toLowerCase().includes(search)
-            )
-        );
+        renderHistory(filteredNotes);
     });
-});
+})();
