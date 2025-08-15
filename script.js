@@ -23,12 +23,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const historyStatus = document.getElementById("historyStatus");
     const backToMain = document.getElementById("backToMain");
     const searchBox = document.getElementById("searchNotes");
+    const connectDriveBtn = document.getElementById("connectDriveBtn");
 
     // --- API and State Management ---
     const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api";
     let loggedInUser = null;
     let allNotes = [];
-    let isEditing = null; // Holds the filename of the note being edited
+    let isEditing = null;
 
     // --- Initial View ---
     showView(loginSection);
@@ -110,6 +111,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 showStatusMessage(loginMsg, data.error || "Login failed.", "red");
             }
         } catch (error) {
+            console.error("Login Error:", error);
             showStatusMessage(loginMsg, "Cannot connect to the server.", "red");
         }
     });
@@ -132,46 +134,33 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!text || !title) return showStatusMessage(status, "Please enter a title and some text.", "red");
         if (!loggedInUser) return showStatusMessage(status, "You must be logged in to save.", "red");
 
-        if (isEditing) {
-            // Update existing note
-            showStatusMessage(status, "Updating...", "#444");
-            try {
-                const payload = { emailid: loggedInUser, filename: isEditing, title: title, filecontent: text };
-                const res = await fetch(`${BACKEND_BASE_URL}/edit`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload)
-                });
-                if (res.ok) {
-                    showStatusMessage(status, "Note updated successfully ✅", "green");
-                    resetMainForm();
-                } else {
-                    const data = await res.json();
-                    showStatusMessage(status, data.error || "Error updating note!", "red");
-                }
-            } catch (e) {
-                showStatusMessage(status, "Network error! Could not connect.", "red");
-            }
+        const endpoint = isEditing ? '/edit' : '/userdata';
+        const method = 'POST';
+        const payload = {
+            emailid: loggedInUser,
+            filename: isEditing || `note_${Date.now()}.txt`,
+            title: title,
+            filecontent: text
+        };
 
-        } else {
-            // Save new note
-            showStatusMessage(status, "Saving...", "#444");
-            try {
-                const payload = { emailid: loggedInUser, filename: `note_${Date.now()}.txt`, title: title, filecontent: text };
-                const res = await fetch(`${BACKEND_BASE_URL}/userdata`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload)
-                });
-                if (res.ok) {
-                    showStatusMessage(status, "Saved to cloud ✅", "green");
-                    resetMainForm();
-                } else {
-                    showStatusMessage(status, "Error saving!", "red");
-                }
-            } catch (e) {
-                showStatusMessage(status, "Network error! Could not connect.", "red");
+        const actionText = isEditing ? "Updating" : "Saving";
+        showStatusMessage(status, `${actionText}...`, "#444");
+
+        try {
+            const res = await fetch(`${BACKEND_BASE_URL}${endpoint}`, {
+                method: method,
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showStatusMessage(status, `Note ${actionText.slice(0, -3)}ed successfully ✅`, "green");
+                resetMainForm();
+            } else {
+                showStatusMessage(status, data.error || `Error ${actionText.toLowerCase()} note!`, "red");
             }
+        } catch (e) {
+            showStatusMessage(status, "Network error! Could not connect.", "red");
         }
     });
 
@@ -273,7 +262,6 @@ document.addEventListener("DOMContentLoaded", () => {
             historyList.appendChild(noteDiv);
         });
 
-        // Add event listeners after rendering
         historyList.querySelectorAll('.edit-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const noteToEdit = allNotes.find(n => n.filename === btn.dataset.filename);
@@ -292,5 +280,34 @@ document.addEventListener("DOMContentLoaded", () => {
             note.filecontent.toLowerCase().includes(searchTerm)
         );
         renderHistory(filteredNotes);
+    });
+
+    // --- Google Drive Connection Logic ---
+    connectDriveBtn.addEventListener("click", async () => {
+        if (!loggedInUser) {
+            showStatusMessage(status, "Please login first.", "red");
+            return;
+        }
+        
+        try {
+            const res = await fetch(`${BACKEND_BASE_URL}/auth/google/start?emailid=${loggedInUser}`);
+            const data = await res.json();
+            
+            if (res.ok) {
+                window.open(data.authorization_url, '_blank', 'width=500,height=600');
+            } else {
+                showStatusMessage(status, data.error || "Could not start Google auth.", "red");
+            }
+        } catch (error) {
+            showStatusMessage(status, "Cannot connect to server for Google auth.", "red");
+        }
+    });
+
+    window.addEventListener("message", (event) => {
+        if (event.data === "google-auth-success") {
+            showStatusMessage(status, "✅ Google Drive connected successfully!", "green");
+            connectDriveBtn.textContent = "✅ Google Drive Connected";
+            connectDriveBtn.disabled = true;
+        }
     });
 })();
