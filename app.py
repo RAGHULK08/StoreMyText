@@ -22,7 +22,6 @@ from google.auth.transport.requests import Request as GoogleRequest
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Environment Variable Check ---
-# Keep DB required since you still have email/password auth
 required_env_vars = ["DATABASE_URL", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "REDIRECT_URI"]
 for var in required_env_vars:
     if not os.environ.get(var):
@@ -37,7 +36,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-
 def get_db_connection():
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -46,14 +44,11 @@ def get_db_connection():
         logging.error(f"CRITICAL: Could not connect to the database: {e}")
         raise
 
-
 # Password validation
 def is_valid_password(password):
     return bool(re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$", password))
 
-
 # ------------------ Initialize Database ------------------
-
 def init_db():
     try:
         with get_db_connection() as conn:
@@ -90,17 +85,14 @@ def init_db():
     except Exception as e:
         logging.error(f"Error during database initialization: {e}")
 
-
 @app.cli.command("init-db")
 def init_db_command():
     init_db()
     click.echo("Initialized the database.")
 
-
 # ------------------ Google OAuth 2.0 Setup ------------------
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 REDIRECT_URI = os.environ.get("REDIRECT_URI")
-
 
 def get_google_flow():
     client_secrets_config = {
@@ -114,12 +106,10 @@ def get_google_flow():
     }
     return Flow.from_client_config(client_secrets_config, scopes=SCOPES, redirect_uri=REDIRECT_URI)
 
-
 # ------------------ API Endpoints ------------------
 @app.route("/")
 def health_check():
     return "Backend is running."
-
 
 @app.route("/api/register", methods=["POST"])
 def register():
@@ -144,7 +134,6 @@ def register():
         logging.error(f"DATABASE ERROR during registration: {e}")
         return jsonify({"error": "Server error during registration."}), 500
 
-
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json(force=True)
@@ -168,7 +157,6 @@ def login():
     except Exception as e:
         logging.error(f"DATABASE ERROR during login: {e}")
         return jsonify({"error": "Server error during login."}), 500
-
 
 # ------------------ Notes CRUD ------------------
 @app.route("/api/userdata", methods=["POST", "GET"])
@@ -206,7 +194,6 @@ def userdata():
         logging.error(f"DATABASE ERROR on /userdata: {e}")
         return jsonify({"error": "A database error occurred."}), 500
 
-
 @app.route("/api/delete", methods=["DELETE"])
 def delete_note():
     data = request.get_json(force=True)
@@ -225,7 +212,6 @@ def delete_note():
     except Exception as e:
         logging.error(f"DATABASE ERROR during delete: {e}")
         return jsonify({"error": "A database error occurred."}), 500
-
 
 @app.route("/api/edit", methods=["POST"])
 def edit_note():
@@ -251,7 +237,6 @@ def edit_note():
         logging.error(f"DATABASE ERROR during edit: {e}")
         return jsonify({"error": "A database error occurred."}), 500
 
-
 # ------------------ Google OAuth ------------------
 @app.route('/api/auth/google/start')
 def google_auth_start():
@@ -261,7 +246,6 @@ def google_auth_start():
     flow = get_google_flow()
     authorization_url, state = flow.authorization_url(access_type='offline', prompt='consent', state=email)
     return jsonify({"authorization_url": authorization_url})
-
 
 @app.route('/api/auth/google/callback')
 def google_auth_callback():
@@ -283,9 +267,7 @@ def google_auth_callback():
         logging.error(f"Error in Google auth callback: {e}")
         return "An error occurred during authentication.", 500
 
-
 # ------------------ Google Drive Upload ------------------
-
 def _get_authed_drive_service(refresh_token: str):
     creds = Credentials(
         None,
@@ -295,26 +277,21 @@ def _get_authed_drive_service(refresh_token: str):
         client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
         scopes=SCOPES,
     )
-    # Proper refresh using google-auth transport
     creds.refresh(GoogleRequest())
     return build('drive', 'v3', credentials=creds)
 
-
 def _ensure_folder(drive_service, folder_name: str) -> str:
-    """Return folder id for `folder_name`, creating it if missing."""
     q = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
     results = drive_service.files().list(q=q, spaces='drive', fields="files(id, name)").execute()
     folders = results.get('files', [])
     if folders:
         return folders[0]['id']
-    # Create folder
     file_metadata = {
         'name': folder_name,
         'mimeType': 'application/vnd.google-apps.folder'
     }
     folder = drive_service.files().create(body=file_metadata, fields='id').execute()
     return folder.get('id')
-
 
 @app.route("/api/drive/upload", methods=["POST"])
 def upload_to_drive():
@@ -332,9 +309,8 @@ def upload_to_drive():
                 if not user or not user["google_refresh_token"]:
                     return jsonify({"error": "Google Drive not connected for this user."}), 400
 
-                drive_service = _get_authed_drive_service(user["google_refresh_token"])  # refresh + service
+                drive_service = _get_authed_drive_service(user["google_refresh_token"])
 
-                # Ensure a dedicated folder for your app
                 parent_folder_id = _ensure_folder(drive_service, "StoreMyText")
 
                 file_metadata = {
@@ -359,9 +335,7 @@ def upload_to_drive():
         logging.error(f"Error in /drive/upload: {e}")
         return jsonify({"error": "Server error during Drive upload."}), 500
 
-
 if __name__ == "__main__":
-    # Initialize tables on boot (safe if already created)
     try:
         init_db()
     except Exception:
