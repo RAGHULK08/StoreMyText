@@ -22,13 +22,25 @@ document.addEventListener("DOMContentLoaded", () => {
     const historyStatus = document.getElementById("historyStatus");
     const backToMain = document.getElementById("backToMain");
     const searchBox = document.getElementById("searchNotes");
-    // const connectDriveBtn = document.getElementById("connectDriveBtn"); // <-- REMOVED
-    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api"; 
+
+    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com/api";
     let loggedInUser = null;
     let allNotes = [];
     let isEditing = null;
 
-    showView(loginSection);
+    // Check for an existing login session when the popup opens
+    if (chrome && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(["loggedInUserEmail"], (result) => {
+            if (result.loggedInUserEmail) {
+                loggedInUser = result.loggedInUserEmail;
+                showView(mainSection);
+            } else {
+                showView(loginSection);
+            }
+        });
+    } else {
+        showView(loginSection);
+    }
 
     function showView(view) {
         [loginSection, registerSection, mainSection, historySection].forEach(
@@ -36,6 +48,10 @@ document.addEventListener("DOMContentLoaded", () => {
         );
         view.classList.add("active");
         logoutBtn.style.display = (view === mainSection || view === historySection) ? "inline-block" : "none";
+
+        if (view === historySection) {
+            fetchHistory();
+        }
     }
 
     function showStatusMessage(element, msg, color, duration = 3000) {
@@ -51,10 +67,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView(registerSection); });
     goToLogin.addEventListener("click", (e) => { e.preventDefault(); showView(loginSection); });
-    historyBtn.addEventListener("click", () => { fetchHistory(); showView(historySection); });
+    historyBtn.addEventListener("click", () => showView(historySection));
     backToMain.addEventListener("click", () => showView(mainSection));
     textInput.addEventListener("input", () => { charCounter.textContent = `${textInput.value.length} characters`; });
-    
+
     registerForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("registerEmail").value.trim().toLowerCase();
@@ -82,12 +98,11 @@ document.addEventListener("DOMContentLoaded", () => {
             showStatusMessage(registerMsg, "Cannot connect to the server.", "red");
         }
     });
-    
+
     loginForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const email = document.getElementById("loginEmail").value.trim().toLowerCase();
         const password = document.getElementById("loginPassword").value.trim();
-        loggedInUser = email;
 
         try {
             const res = await fetch(`${BACKEND_BASE_URL}/login`, {
@@ -97,10 +112,15 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             const data = await res.json();
             if (res.ok) {
+                loggedInUser = email;
+                if (chrome && chrome.storage && chrome.storage.local) {
+                    chrome.storage.local.set({ loggedInUserEmail: email });
+                }
+
                 if (data.is_google_connected) {
                     showView(mainSection);
                 } else {
-                    showStatusMessage(loginMsg, "Login successful! Please connect your Google Drive to continue.", "blue");
+                    showStatusMessage(loginMsg, "Login successful! Please connect your Google Drive.", "blue");
                     connectToGoogleDrive();
                 }
                 loginForm.reset();
@@ -116,6 +136,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logoutBtn.addEventListener("click", () => {
         if (confirm("Are you sure you want to logout?")) {
+            if (chrome && chrome.storage && chrome.storage.local) {
+                chrome.storage.local.remove('loggedInUserEmail');
+            }
             loggedInUser = null;
             allNotes = [];
             resetMainForm();
@@ -123,12 +146,9 @@ document.addEventListener("DOMContentLoaded", () => {
             showView(loginSection);
         }
     });
-    
+
     async function connectToGoogleDrive() {
-        if (!loggedInUser) {
-            showStatusMessage(status, "An error occurred. Please log in again.", "red");
-            return;
-        }
+        if (!loggedInUser) return;
         try {
             const res = await fetch(`${BACKEND_BASE_URL}/auth/google/start?emailid=${loggedInUser}`);
             const data = await res.json();
@@ -148,8 +168,6 @@ document.addEventListener("DOMContentLoaded", () => {
             showView(mainSection);
         }
     });
-
-    // connectDriveBtn.addEventListener("click", connectToGoogleDrive); // <-- REMOVED
 
     saveBtn.addEventListener("click", async () => {
         const title = noteTitleInput.value.trim();
@@ -242,7 +260,7 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const url = new URL(`${BACKEND_BASE_URL}/userdata`);
             url.searchParams.set("emailid", loggedInUser);
-            const res = await fetch(url);
+            const res = await fetch(url, { cache: 'no-cache' });
             if (!res.ok) throw new Error("Server responded with an error");
             allNotes = await res.json();
             renderHistory(allNotes);
@@ -254,7 +272,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function renderHistory(notes) {
         historyList.innerHTML = "";
-        if (!notes.length) {
+        if (!notes || notes.length === 0) {
             historyList.innerHTML = "<p>No saved notes found.</p>";
             return;
         }
@@ -277,30 +295,72 @@ document.addEventListener("DOMContentLoaded", () => {
                     <div class="history-item-actions">
                         <button class="edit-btn" data-filename="${note.filename}">Edit</button>
                         <button class="delete-btn" data-filename="${note.filename}">Delete</button>
+                        <button class="drive-btn" data-filename="${note.filename}">Save to Google Drive</button>
                     </div>
                 </div>
             `;
-
             historyList.appendChild(noteDiv);
         });
 
-        historyList.querySelectorAll('.edit-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const noteToEdit = allNotes.find(n => n.filename === btn.dataset.filename);
-                if (noteToEdit) handleEditNote(noteToEdit);
+        // --- ROBUSTNESS FIX: Check if buttons exist before adding listeners ---
+        const editButtons = historyList.querySelectorAll('.edit-btn');
+        if (editButtons) {
+            editButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const noteToEdit = allNotes.find(n => n.filename === btn.dataset.filename);
+                    if (noteToEdit) handleEditNote(noteToEdit);
+                });
             });
-        });
-        historyList.querySelectorAll('.delete-btn').forEach(btn => {
-            btn.addEventListener('click', () => handleDeleteNote(btn.dataset.filename));
-        });
+        }
+
+        const deleteButtons = historyList.querySelectorAll('.delete-btn');
+        if (deleteButtons) {
+            deleteButtons.forEach(btn => {
+                btn.addEventListener('click', () => handleDeleteNote(btn.dataset.filename));
+            });
+        }
+
+        const driveButtons = historyList.querySelectorAll('.drive-btn');
+        if (driveButtons) {
+            driveButtons.forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const noteToUpload = allNotes.find(n => n.filename === btn.dataset.filename);
+                    if (!noteToUpload) return;
+                    showStatusMessage(historyStatus, "Uploading to Google Drive...", "#444");
+                    try {
+                        const res = await fetch(`${BACKEND_BASE_URL}/drive/upload`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                emailid: loggedInUser,
+                                filename: noteToUpload.filename,
+                                title: noteToUpload.title,
+                                filecontent: noteToUpload.filecontent
+                            })
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            showStatusMessage(historyStatus, "Uploaded to Google Drive ✅", "green");
+                        } else {
+                            showStatusMessage(historyStatus, data.error || "Drive upload failed.", "red");
+                        }
+                    } catch (err) {
+                        showStatusMessage(historyStatus, "Network error during Drive upload.", "red");
+                    }
+                });
+            });
+        }
     }
 
-    searchBox.addEventListener("input", function () {
-        const searchTerm = this.value.trim().toLowerCase();
-        const filteredNotes = allNotes.filter(note =>
-            note.title.toLowerCase().includes(searchTerm) ||
-            note.filecontent.toLowerCase().includes(searchTerm)
-        );
-        renderHistory(filteredNotes);
-    });
+    // --- ROBUSTNESS FIX: Check if searchBox exists before adding listener ---
+    if (searchBox) {
+        searchBox.addEventListener("input", function () {
+            const searchTerm = this.value.trim().toLowerCase();
+            const filteredNotes = allNotes.filter(note =>
+                note.title.toLowerCase().includes(searchTerm) ||
+                note.filecontent.toLowerCase().includes(searchTerm)
+            );
+            renderHistory(filteredNotes);
+        });
+    }
 })();
