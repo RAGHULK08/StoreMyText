@@ -2,10 +2,11 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Store My Text</title>
-    <link rel="icon" href="StoreMyText.png" type="image/png">
-    <link rel="stylesheet" href="static/style.css">
+    <link rel="icon" href="static/storemytext.png" type="image/png" />
+    <link rel="stylesheet" href="static/style.css" />
 </head>
 
 <body>
@@ -17,37 +18,33 @@
     <main>
         <section id="loginSection" class="view">
             <h2>Login</h2>
-            <form id="loginForm">
-                <input type="email" id="loginEmail" placeholder="Email" autocomplete="username" required>
+            <form id="loginForm" novalidate>
+                <input type="email" id="loginEmail" placeholder="Email" autocomplete="username" required />
                 <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password"
-                    required>
+                    required />
                 <button type="submit">Login</button>
             </form>
-            <div id="loginMsg" class="message"></div>
-            <div class="form-link">
-                New user? <a href="#" id="goToRegister">Register here</a>
-            </div>
+            <div id="loginMsg" class="message" role="status"></div>
+            <div class="form-link">New user? <a href="#" id="goToRegister">Register here</a></div>
         </section>
 
         <section id="registerSection" class="view">
             <h2>Register</h2>
-            <form id="registerForm">
-                <input type="email" id="registerEmail" placeholder="Email" autocomplete="username" required>
+            <form id="registerForm" novalidate>
+                <input type="email" id="registerEmail" placeholder="Email" autocomplete="username" required />
                 <input type="password" id="registerPassword" placeholder="Password" autocomplete="new-password"
-                    required>
+                    required />
                 <input type="password" id="registerConfirmPassword" placeholder="Confirm Password"
-                    autocomplete="new-password" required>
+                    autocomplete="new-password" required />
                 <button type="submit">Register</button>
             </form>
-            <div id="registerMsg" class="message"></div>
-            <div class="form-link">
-                Already have an account? <a href="#" id="goToLogin">Login</a>
-            </div>
+            <div id="registerMsg" class="message" role="status"></div>
+            <div class="form-link">Already have an account? <a href="#" id="goToLogin">Login</a></div>
         </section>
 
         <section id="mainSection" class="view">
             <h2 id="mainSectionTitle">Save Your Text</h2>
-            <input type="text" id="noteTitle" placeholder="Note Title..." style="margin-bottom: 12px;">
+            <input type="text" id="noteTitle" placeholder="Note Title..." style="margin-bottom: 12px;" />
             <div class="textarea-container">
                 <textarea id="textInput" placeholder="Type your text here..."></textarea>
                 <div id="charCounter" class="char-counter">0 characters</div>
@@ -57,14 +54,15 @@
             <div class="btn-row">
                 <button id="historyBtn">View History</button>
             </div>
-            <div id="status" class="message"></div>
+            <div id="status" class="message" role="status"></div>
+            <button id="connectDriveBtn" class="drive-btn" type="button">🔗 Connect Google Drive</button>
         </section>
 
         <section id="historySection" class="view">
             <h2>Your Saved Notes</h2>
             <input type="text" id="searchNotes" placeholder="Search by title or content..."
-                style="margin-bottom:12px;width:100%;padding:8px;">
-            <div id="historyStatus" class="message"></div>
+                style="margin-bottom:12px;width:100%;padding:8px;" />
+            <div id="historyStatus" class="message" role="status"></div>
             <div id="historyList"></div>
             <div class="btn-row">
                 <button id="backToMain">Back</button>
