@@ -52,18 +52,22 @@ header .logout {
     cursor: pointer;
 }
 
-/* Main area */
+/* Main area*/
 main {
     min-height: calc(100vh - var(--header-height));
     margin-top: var(--header-height);
     display: flex;
     justify-content: center;
+    /* center horizontally */
     align-items: center;
+    /* center vertically */
     padding: 28px;
 }
 
 /* Each view card (login/register/main/history) */
+/* HIDE all views by default — show only when .active is applied */
 .view {
+    display: none;
     width: 100%;
     max-width: var(--card-max-width);
     background: white;
@@ -73,7 +77,14 @@ main {
     animation: fadeIn .35s ease;
 }
 
-/* For very tall content (history list)*/
+/* Make the active view visible and ensure it behaves as a single centered block */
+.view.active {
+    display: block;
+    /* becomes the single visible child of main */
+    margin: 0 auto;
+}
+
+/* For very tall content (history list) allow internal scrolling, but keep the card centered */
 .view--scrollable {
     max-height: calc(100vh - var(--header-height) - 80px);
     overflow-y: auto;
