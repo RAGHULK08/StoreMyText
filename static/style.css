@@ -1,4 +1,16 @@
 body {
+    width: 450px;
+    /* Set a fixed width for the popup */
+    min-height: 500px;
+    /* Set a minimum height */
+}
+
+main {
+    margin-top: 80px;
+    /* Adjust top margin if header overlaps */
+}
+
+body {
     font-family: 'Segoe UI', 'Roboto', sans-serif;
     background: #f0f2f5;
     margin: 0;
@@ -193,7 +205,7 @@ button:hover {
     margin-bottom: 12px;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
 }
 
 .history-item-header {
@@ -233,26 +245,64 @@ button:hover {
     margin-top: 0;
 }
 
-.edit-btn { background: #16a085; }
-.delete-btn { background: #e74c3c; }
-.edit-btn:hover { background: #14806d; }
-.delete-btn:hover { background: #c0392b; }
+.edit-btn {
+    background: #16a085;
+}
 
-#backToMain, #cancelEditBtn { background: #6c757d; }
-#backToMain:hover, #cancelEditBtn:hover { background: #5a6268; }
+.delete-btn {
+    background: #e74c3c;
+}
+
+.edit-btn:hover {
+    background: #14806d;
+}
+
+.delete-btn:hover {
+    background: #c0392b;
+}
+
+#backToMain,
+#cancelEditBtn {
+    background: #6c757d;
+}
+
+#backToMain:hover,
+#cancelEditBtn:hover {
+    background: #5a6268;
+}
+
+.history-item-actions .drive-btn {
+    background: #4285F4;
+    color: white;
+    margin-left: 5px;
+}
+
+.history-item-actions .drive-btn:hover {
+    filter: brightness(1.1);
+}
 
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(15px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+        opacity: 0;
+        transform: translateY(15px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .drive-btn {
-    background: #4285F4; /* Google Blue */
+    background: #4285F4;
+    /* Google Blue */
     margin-top: 15px;
 }
+
 .drive-btn:hover {
     filter: brightness(1.1);
 }
+
 .drive-btn:disabled {
     background: #8f8f8f;
     cursor: not-allowed;
