@@ -259,6 +259,60 @@ def google_auth_callback():
         logging.error(f"Error in Google auth callback: {e}")
         return "An error occurred during authentication.", 500
 
+@app.route("/api/drive/upload", methods=["POST"])
+def upload_to_drive():
+    data = request.get_json()
+    email = (data.get("emailid") or "").strip().lower()
+    filename = data.get("filename")
+    title = data.get("title", "Untitled").strip()
+    filecontent = data.get("filecontent", "")
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                cursor.execute("SELECT google_refresh_token FROM users WHERE email = %s", (email,))
+                user = cursor.fetchone()
+                if not user or not user["google_refresh_token"]:
+                    return jsonify({"error": "Google Drive not connected for this user."}), 400
+
+                # Refresh credentials
+                creds = Credentials(
+                    None,
+                    refresh_token=user["google_refresh_token"],
+                    token_uri="https://accounts.google.com/o/oauth2/token",
+                    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+                    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+                    scopes=SCOPES
+                )
+                creds.refresh_request = None  # Required for refresh
+
+                try:
+                    creds.refresh(build("drive", "v3")._http)
+                except Exception as e:
+                    logging.error(f"Google token refresh failed: {e}")
+                    return jsonify({"error": "Failed to refresh Google credentials."}), 500
+
+                drive_service = build('drive', 'v3', credentials=creds)
+                file_metadata = {
+                    'name': title or filename,
+                    'mimeType': 'text/plain'
+                }
+                media_body = filecontent
+
+                try:
+                    file = drive_service.files().create(
+                        body=file_metadata,
+                        media_body=media_body,
+                        fields='id'
+                    ).execute()
+                    return jsonify({"message": "Note uploaded to Google Drive.", "file_id": file.get("id")}), 200
+                except HttpError as e:
+                    logging.error(f"Google Drive upload error: {e}")
+                    return jsonify({"error": "Failed to upload to Google Drive."}), 500
+
+    except Exception as e:
+        logging.error(f"Error in /drive/upload: {e}")
+        return jsonify({"error": "Server error during Drive upload."}), 500
+
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
