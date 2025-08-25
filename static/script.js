@@ -67,7 +67,8 @@
     };
 
     // --- Constants ---
-    const BACKEND_BASE_URL = "http://127.0.0.1:5000";
+    // Use relative path for backend API (works for local and deployed)
+    const BACKEND_BASE_URL = "/"; // Use "/" for same-origin API calls
     const MAX_CHAR_LIMIT = 10000;
 
     // --- Utility Functions ---
@@ -83,6 +84,23 @@
         element.style.color = color;
         // The message will auto-clear on the next successful action.
     }
+
+    // --- Password Show/Hide Toggle ---
+    function addPasswordToggle(input, container) {
+        const toggle = document.createElement("span");
+        toggle.textContent = "👁";
+        toggle.style.cursor = "pointer";
+        toggle.style.marginLeft = "8px";
+        toggle.style.userSelect = "none";
+        toggle.title = "Show/Hide Password";
+        toggle.onclick = () => {
+            input.type = input.type === "password" ? "text" : "password";
+            toggle.textContent = input.type === "password" ? "👁" : "🙈";
+        };
+        container.appendChild(toggle);
+    }
+    // Add to login password field
+    addPasswordToggle(UI.inputs.loginPassword, UI.inputs.loginPassword.parentElement);
 
     /**
      * A promise-based custom confirmation dialog to replace the blocking `window.confirm`.
@@ -276,7 +294,7 @@
 
         // Google Drive
         UI.buttons.connectDrive.addEventListener("click", () => {
-            window.location.href = `${BACKEND_BASE_URL}/drive/login?email=${encodeURIComponent(state.loggedInUser)}`;
+            window.location.href = `${BACKEND_BASE_URL}/drive/login?email=${state.loggedInUser}`;
         });
     }
 
@@ -288,23 +306,33 @@
             showStatusMessage(UI.messages.login, "Please enter both email and password.", "red");
             return;
         }
+        UI.buttons.save.disabled = true;
+        showStatusMessage(UI.messages.login, "Logging in...", "#444");
         try {
-            const response = await fetch(`${BACKEND_BASE_URL}/login`, {
+            const response = await fetch(`${BACKEND_BASE_URL}login`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ emailid: email, password: password }),
             });
-            const result = await response.json();
-            if (response.ok) {
-                state.loggedInUser = email;
-                localStorage.setItem("loggedInUser", email);
-                UI.buttons.logout.style.display = "block";
-                switchView("main");
-            } else {
+            if (!response.ok) {
+                let result = {};
+                try { result = await response.json(); } catch { }
                 throw new Error(result.error || "Login failed.");
             }
+            const result = await response.json();
+            state.loggedInUser = email;
+            localStorage.setItem("loggedInUser", email);
+            UI.buttons.logout.style.display = "block";
+            showStatusMessage(UI.messages.login, "Login successful!", "green");
+            switchView("main");
         } catch (error) {
-            showStatusMessage(UI.messages.login, error.message, "red");
+            if (error.name === "TypeError") {
+                showStatusMessage(UI.messages.login, "Network error: Could not connect to server.", "red");
+            } else {
+                showStatusMessage(UI.messages.login, error.message, "red");
+            }
+        } finally {
+            UI.buttons.save.disabled = false;
         }
     }
 
@@ -504,4 +532,3 @@
     document.addEventListener("DOMContentLoaded", initialize);
 
 })();
-
