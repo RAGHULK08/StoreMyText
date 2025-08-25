@@ -4,10 +4,9 @@ import psycopg2
 import logging
 from io import BytesIO
 from psycopg2.extras import DictCursor
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-import click
 from datetime import datetime
 
 # --- Google OAuth Imports ---
@@ -33,312 +32,399 @@ CORS(app)
 
 # ------------------ Database Configuration ------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
-if DATABASE_URL.startswith("postgres://"):
+# Adjust for Heroku's PostgreSQL scheme if needed
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 def get_db_connection():
+    """Establishes and returns a database connection."""
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        conn = psycopg2.connect(DATABASE_URL)
         return conn
     except psycopg2.OperationalError as e:
-        logging.error(f"CRITICAL: Could not connect to the database: {e}")
-        raise
+        logging.error(f"Database connection error: {e}")
+        return None
 
-# Password validation
-def is_valid_password(password):
-    return bool(re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$", password))
-
-# ------------------ Initialize Database ------------------
 def init_db():
+    """Initializes the database tables if they don't exist."""
+    conn = get_db_connection()
+    if not conn: return
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                logging.info("Ensuring database tables exist...")
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS users (
-                        id SERIAL PRIMARY KEY,
-                        email TEXT UNIQUE NOT NULL,
-                        password_hash TEXT NOT NULL,
-                        created_at TIMESTAMPTZ DEFAULT NOW(),
-                        google_access_token TEXT,
-                        google_refresh_token TEXT
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS notes (
-                        id SERIAL PRIMARY KEY,
-                        user_id INTEGER NOT NULL,
-                        filename TEXT NOT NULL,
-                        title TEXT NOT NULL DEFAULT 'Untitled',
-                        filecontent TEXT NOT NULL,
-                        created_at TIMESTAMPTZ DEFAULT NOW(),
-                        updated_at TIMESTAMPTZ DEFAULT NOW(),
-                        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-                    )
-                    """
-                )
-                conn.commit()
-                logging.info("Database tables are ready.")
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    emailid VARCHAR(255) PRIMARY KEY,
+                    password_hash VARCHAR(255) NOT NULL,
+                    google_refresh_token TEXT
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS notes (
+                    filename VARCHAR(255) PRIMARY KEY,
+                    emailid VARCHAR(255) REFERENCES users(emailid) ON DELETE CASCADE,
+                    title TEXT,
+                    filecontent TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    pinned BOOLEAN DEFAULT FALSE
+                );
+            """)
+            conn.commit()
+            logging.info("Database tables initialized successfully.")
     except Exception as e:
-        logging.error(f"Error during database initialization: {e}")
+        logging.error(f"DB Init Error: {e}")
+    finally:
+        if conn: conn.close()
 
-@app.cli.command("init-db")
-def init_db_command():
-    init_db()
-    click.echo("Initialized the database.")
+# ------------------ User Authentication Routes ------------------
 
-# ------------------ Google OAuth 2.0 Setup ------------------
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-REDIRECT_URI = os.environ.get("REDIRECT_URI")
-
-def get_google_flow():
-    client_secrets_config = {
-        "web": {
-            "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
-            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://accounts.google.com/o/oauth2/token",
-            "redirect_uris": [REDIRECT_URI],
-        }
-    }
-    return Flow.from_client_config(client_secrets_config, scopes=SCOPES, redirect_uri=REDIRECT_URI)
-
-# ------------------ API Endpoints ------------------
-@app.route("/")
-def health_check():
-    return "Backend is running."
-
-@app.route("/api/register", methods=["POST"])
+@app.route("/register", methods=["POST"])
 def register():
-    data = request.get_json(force=True)
-    email = (data.get("email") or "").strip().lower()
-    password = data.get("password") or ""
+    data = request.get_json()
+    email = data.get("emailid")
+    password = data.get("password")
+
     if not email or not password:
         return jsonify({"error": "Email and password are required."}), 400
-    if not is_valid_password(password):
-        return jsonify({"error": "Password: 8+ chars, uppercase, lowercase, & symbol."}), 400
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
-                if cursor.fetchone():
-                    return jsonify({"error": "Email already registered."}), 409
-                hashed_password = generate_password_hash(password)
-                cursor.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, hashed_password))
-                conn.commit()
-                return jsonify({"message": "Registration successful."}), 201
-    except Exception as e:
-        logging.error(f"DATABASE ERROR during registration: {e}")
-        return jsonify({"error": "Server error during registration."}), 500
 
-@app.route("/api/login", methods=["POST"])
+    hashed_password = generate_password_hash(password)
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO users (emailid, password_hash) VALUES (%s, %s)", (email, hashed_password))
+            conn.commit()
+        return jsonify({"message": "User registered successfully."}), 201
+    except psycopg2.IntegrityError:
+        return jsonify({"error": "User with this email already exists."}), 409
+    except Exception as e:
+        logging.error(f"Register Error: {e}")
+        return jsonify({"error": "An internal error occurred."}), 500
+    finally:
+        if conn: conn.close()
+
+@app.route("/login", methods=["POST"])
 def login():
-    data = request.get_json(force=True)
-    email = (data.get("email") or "").strip().lower()
-    password = data.get("password") or ""
+    data = request.get_json()
+    email = data.get("emailid")
+    password = data.get("password")
+
     if not email or not password:
-        return jsonify({"error": "Invalid email or password."}), 401
+        return jsonify({"error": "Email and password are required."}), 400
+
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+    
     try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=DictCursor) as cursor:
-                cursor.execute("SELECT password_hash, google_refresh_token FROM users WHERE email = %s", (email,))
-                user = cursor.fetchone()
-                if not user or not check_password_hash(user["password_hash"], password):
-                    return jsonify({"error": "Invalid email or password."}), 401
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM users WHERE emailid = %s", (email,))
+            user = cur.fetchone()
 
-                is_google_connected = bool(user["google_refresh_token"]) if user else False
-                return jsonify({
-                    "message": "Login successful.",
-                    "is_google_connected": is_google_connected,
-                }), 200
+        if user and check_password_hash(user["password_hash"], password):
+            return jsonify({"message": "Login successful."}), 200
+        else:
+            return jsonify({"error": "Invalid email or password."}), 401
     except Exception as e:
-        logging.error(f"DATABASE ERROR during login: {e}")
-        return jsonify({"error": "Server error during login."}), 500
+        logging.error(f"Login Error: {e}")
+        return jsonify({"error": "An internal error occurred."}), 500
+    finally:
+        if conn: conn.close()
 
-# ------------------ Notes CRUD ------------------
-@app.route("/api/userdata", methods=["POST", "GET"])
-def userdata():
+# ------------------ Note Management Routes ------------------
+
+def generate_filename(email):
+    """Generates a unique filename based on email and timestamp."""
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    # Sanitize email for filename
+    sanitized_email = re.sub(r'[^a-zA-Z0-9]', '_', email.split('@')[0])
+    return f"{sanitized_email}_{timestamp}.txt"
+
+@app.route("/save", methods=["POST"])
+def save_text():
+    data = request.get_json()
+    email = data.get("emailid")
+    content = data.get("filecontent")
+    title = data.get("title", "Untitled Note") # Default title
+
+    if not email or not content:
+        return jsonify({"error": "Email and content are required."}), 400
+
+    filename = generate_filename(email)
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+
     try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=DictCursor) as cursor:
-                if request.method == "POST":
-                    data = request.get_json(force=True)
-                    email = (data.get("emailid") or "").strip().lower()
-                    cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
-                    user = cursor.fetchone()
-                    if not user:
-                        return jsonify({"error": "User not found."}), 404
-                    cursor.execute(
-                        "INSERT INTO notes (user_id, filename, title, filecontent) VALUES (%s, %s, %s, %s)",
-                        (user["id"], data.get("filename"), data.get("title", "Untitled").strip(), data.get("filecontent")),
-                    )
-                    conn.commit()
-                    return jsonify({"message": "Note saved successfully."}), 201
-                else:  # GET
-                    email = (request.args.get("emailid") or "").strip().lower()
-                    cursor.execute(
-                        """
-                        SELECT filename, title, filecontent, updated_at
-                        FROM notes
-                        WHERE user_id = (SELECT id FROM users WHERE email = %s)
-                        ORDER BY updated_at DESC
-                        """,
-                        (email,),
-                    )
-                    notes = [dict(row) for row in cursor.fetchall()]
-                    return jsonify(notes), 200
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO notes (filename, emailid, title, filecontent) VALUES (%s, %s, %s, %s)",
+                (filename, email, title, content)
+            )
+            conn.commit()
+        return jsonify({"message": "Note saved successfully.", "filename": filename}), 201
     except Exception as e:
-        logging.error(f"DATABASE ERROR on /userdata: {e}")
-        return jsonify({"error": "A database error occurred."}), 500
+        logging.error(f"Save Error: {e}")
+        return jsonify({"error": "Failed to save note."}), 500
+    finally:
+        if conn: conn.close()
 
-@app.route("/api/delete", methods=["DELETE"])
-def delete_note():
-    data = request.get_json(force=True)
-    email = (data.get("emailid") or "").strip().lower()
-    filename = data.get("filename")
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
-                user = cursor.fetchone()
-                if not user:
-                    return jsonify({"error": "User not found."}), 404
-                cursor.execute("DELETE FROM notes WHERE user_id = %s AND filename = %s", (user[0], filename))
-                conn.commit()
-                return jsonify({"message": "Note deleted successfully."}), 200
-    except Exception as e:
-        logging.error(f"DATABASE ERROR during delete: {e}")
-        return jsonify({"error": "A database error occurred."}), 500
+@app.route("/history", methods=["POST"])
+def get_history():
+    data = request.get_json()
+    email = data.get("emailid")
 
-@app.route("/api/edit", methods=["POST"])
-def edit_note():
-    data = request.get_json(force=True)
-    email = (data.get("emailid") or "").strip().lower()
-    filename = data.get("filename")
-    title = (data.get("title") or "Untitled").strip()
-    new_content = data.get("filecontent")
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
-                user = cursor.fetchone()
-                if not user:
-                    return jsonify({"error": "User not found."}), 404
-                cursor.execute(
-                    "UPDATE notes SET title = %s, filecontent = %s, updated_at = NOW() WHERE user_id = %s AND filename = %s",
-                    (title, new_content, user[0], filename),
-                )
-                conn.commit()
-                return jsonify({"message": "Note updated successfully."}), 200
-    except Exception as e:
-        logging.error(f"DATABASE ERROR during edit: {e}")
-        return jsonify({"error": "A database error occurred."}), 500
-
-# ------------------ Google OAuth ------------------
-@app.route('/api/auth/google/start')
-def google_auth_start():
-    email = request.args.get('emailid')
     if not email:
-        return jsonify({"error": "Email ID is required."}), 400
-    flow = get_google_flow()
-    authorization_url, state = flow.authorization_url(access_type='offline', prompt='consent', state=email)
-    return jsonify({"authorization_url": authorization_url})
+        return jsonify({"error": "Email is required."}), 400
 
-@app.route('/api/auth/google/callback')
-def google_auth_callback():
-    email = request.args.get('state')
-    code = request.args.get('code')
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+
     try:
-        flow = get_google_flow()
-        flow.fetch_token(code=code)
-        credentials = flow.credentials
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE users SET google_access_token = %s, google_refresh_token = %s WHERE email = %s",
-                    (credentials.token, credentials.refresh_token, email)
-                )
-                conn.commit()
-        return '<script>window.opener.postMessage("google-auth-success", "*"); window.close();</script>'
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(
+                "SELECT filename, title, filecontent, created_at, pinned FROM notes WHERE emailid = %s ORDER BY pinned DESC, created_at DESC",
+                (email,)
+            )
+            notes = [dict(row) for row in cur.fetchall()]
+        return jsonify(notes), 200
     except Exception as e:
-        logging.error(f"Error in Google auth callback: {e}")
-        return "An error occurred during authentication.", 500
+        logging.error(f"History Error: {e}")
+        return jsonify({"error": "Failed to retrieve history."}), 500
+    finally:
+        if conn: conn.close()
 
-# ------------------ Google Drive Upload ------------------
-def _get_authed_drive_service(refresh_token: str):
+@app.route("/update", methods=["PUT"])
+def update_note():
+    data = request.get_json()
+    email = data.get("emailid")
+    filename = data.get("filename")
+    content = data.get("filecontent")
+    title = data.get("title")
+
+    if not all([email, filename, content, title is not None]):
+        return jsonify({"error": "Missing required fields for update."}), 400
+
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE notes SET title = %s, filecontent = %s WHERE filename = %s AND emailid = %s",
+                (title, content, filename, email)
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return jsonify({"error": "Note not found or user mismatch."}), 404
+        return jsonify({"message": "Note updated successfully."}), 200
+    except Exception as e:
+        logging.error(f"Update Error: {e}")
+        return jsonify({"error": "Failed to update note."}), 500
+    finally:
+        if conn: conn.close()
+
+@app.route("/delete", methods=["DELETE"])
+def delete_note():
+    data = request.get_json()
+    email = data.get("emailid")
+    filename = data.get("filename")
+
+    if not email or not filename:
+        return jsonify({"error": "Email and filename are required."}), 400
+
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM notes WHERE filename = %s AND emailid = %s", (filename, email))
+            conn.commit()
+            if cur.rowcount == 0:
+                return jsonify({"error": "Note not found or permission denied."}), 404
+        return jsonify({"message": "Note deleted successfully."}), 200
+    except Exception as e:
+        logging.error(f"Delete Error: {e}")
+        return jsonify({"error": "Failed to delete note."}), 500
+    finally:
+        if conn: conn.close()
+
+@app.route("/pin", methods=["PUT"])
+def pin_note():
+    data = request.get_json()
+    email = data.get("emailid")
+    filename = data.get("filename")
+    pinned = data.get("pinned")
+
+    if not all([email, filename, pinned is not None]):
+        return jsonify({"error": "Missing required fields for pin action."}), 400
+
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE notes SET pinned = %s WHERE filename = %s AND emailid = %s",
+                (pinned, filename, email)
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return jsonify({"error": "Note not found or user mismatch."}), 404
+        return jsonify({"message": f"Note {'pinned' if pinned else 'unpinned'} successfully."}), 200
+    except Exception as e:
+        logging.error(f"Pin Error: {e}")
+        return jsonify({"error": "Failed to update pin status."}), 500
+    finally:
+        if conn: conn.close()
+
+# ------------------ Google Drive Integration ------------------
+
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+CLIENT_SECRETS_FILE = {
+    "web": {
+        "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
+        "project_id": "storemytext", # Can be generic
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
+        "redirect_uris": [os.environ.get("REDIRECT_URI")]
+    }
+}
+
+@app.route('/drive/login')
+def drive_login():
+    email = request.args.get('email')
+    if not email:
+        return jsonify({"error": "Email is required to initiate Google Drive login."}), 400
+    
+    flow = Flow.from_client_config(
+        CLIENT_SECRETS_FILE,
+        scopes=SCOPES,
+        redirect_uri=os.environ.get("REDIRECT_URI")
+    )
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        prompt='consent',
+        state=email # Pass email through state
+    )
+    return redirect(authorization_url)
+
+@app.route('/drive/callback')
+def drive_callback():
+    state = request.args.get('state') # Email is in state
+    flow = Flow.from_client_config(
+        CLIENT_SECRETS_FILE,
+        scopes=SCOPES,
+        redirect_uri=os.environ.get("REDIRECT_URI")
+    )
+    flow.fetch_token(authorization_response=request.url)
+    
+    refresh_token = flow.credentials.refresh_token
+    
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET google_refresh_token = %s WHERE emailid = %s",
+                (refresh_token, state)
+            )
+            conn.commit()
+        # Redirect to a simple success page or back to the app's main page
+        return """
+            <html>
+                <head><title>Success</title></head>
+                <body>
+                    <h1>Google Drive connected successfully!</h1>
+                    <p>You can now close this tab and return to the application.</p>
+                </body>
+            </html>
+        """
+    except Exception as e:
+        logging.error(f"Drive Callback Error: {e}")
+        return jsonify({"error": "Failed to save Google Drive token."}), 500
+    finally:
+        if conn: conn.close()
+
+def _get_and_refresh_drive_service(refresh_token):
+    """Builds a Drive service object from a refresh token."""
     creds = Credentials(
         None,
         refresh_token=refresh_token,
-        token_uri="https://accounts.google.com/o/oauth2/token",
-        client_id=os.environ.get("GOOGLE_CLIENT_ID"),
-        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
-        scopes=SCOPES,
+        token_uri=CLIENT_SECRETS_FILE['web']['token_uri'],
+        client_id=CLIENT_SECRETS_FILE['web']['client_id'],
+        client_secret=CLIENT_SECRETS_FILE['web']['client_secret'],
+        scopes=SCOPES
     )
     creds.refresh(GoogleRequest())
     return build('drive', 'v3', credentials=creds)
 
-def _ensure_folder(drive_service, folder_name: str) -> str:
-    q = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = drive_service.files().list(q=q, spaces='drive', fields="files(id, name)").execute()
-    folders = results.get('files', [])
-    if folders:
-        return folders[0]['id']
-    file_metadata = {
-        'name': folder_name,
-        'mimeType': 'application/vnd.google-apps.folder'
-    }
-    folder = drive_service.files().create(body=file_metadata, fields='id').execute()
-    return folder.get('id')
+def _ensure_folder(service, folder_name):
+    """Finds a folder by name or creates it if it doesn't exist. Returns folder ID."""
+    query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
+    response = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    files = response.get('files', [])
+    if files:
+        return files[0].get('id')
+    else:
+        file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
+        folder = service.files().create(body=file_metadata, fields='id').execute()
+        return folder.get('id')
 
-@app.route("/api/drive/upload", methods=["POST"])
+@app.route("/drive/upload", methods=["POST"])
 def upload_to_drive():
-    data = request.get_json(force=True)
-    email = (data.get("emailid") or "").strip().lower()
+    data = request.get_json()
+    email = data.get("emailid")
     filename = data.get("filename")
-    title = (data.get("title") or "Untitled").strip()
-    filecontent = data.get("filecontent", "")
 
+    if not email or not filename:
+        return jsonify({"error": "Email and filename are required."}), 400
+
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Database service unavailable."}), 503
+    
     try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=DictCursor) as cursor:
-                cursor.execute("SELECT google_refresh_token FROM users WHERE email = %s", (email,))
-                user = cursor.fetchone()
-                if not user or not user["google_refresh_token"]:
-                    return jsonify({"error": "Google Drive not connected for this user."}), 400
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            # First, get the user's refresh token
+            cur.execute("SELECT google_refresh_token FROM users WHERE emailid = %s", (email,))
+            user = cur.fetchone()
+            if not user or not user['google_refresh_token']:
+                return jsonify({"error": "Google Drive not connected for this user."}), 403
 
-                drive_service = _get_authed_drive_service(user["google_refresh_token"])
+            # Then, get the note content
+            cur.execute("SELECT title, filecontent FROM notes WHERE filename = %s AND emailid = %s", (filename, email))
+            note = cur.fetchone()
+            if not note:
+                return jsonify({"error": "Note not found."}), 404
 
-                parent_folder_id = _ensure_folder(drive_service, "StoreMyText")
+        drive_service = _get_and_refresh_drive_service(user["google_refresh_token"])
+        parent_folder_id = _ensure_folder(drive_service, "StoreMyText")
 
-                file_metadata = {
-                    'name': title or filename,
-                    'mimeType': 'text/plain',
-                    'parents': [parent_folder_id],
-                }
-                media_body = MediaIoBaseUpload(BytesIO(filecontent.encode('utf-8')), mimetype='text/plain', resumable=False)
+        file_metadata = {
+            'name': note['title'] or filename,
+            'mimeType': 'text/plain',
+            'parents': [parent_folder_id],
+        }
+        media_body = MediaIoBaseUpload(BytesIO(note['filecontent'].encode('utf-8')), mimetype='text/plain', resumable=False)
 
-                try:
-                    file = drive_service.files().create(
-                        body=file_metadata,
-                        media_body=media_body,
-                        fields='id'
-                    ).execute()
-                    return jsonify({"message": "Note uploaded to Google Drive.", "file_id": file.get("id")}), 200
-                except HttpError as e:
-                    logging.error(f"Google Drive upload error: {e}")
-                    return jsonify({"error": "Failed to upload to Google Drive."}), 500
+        file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media_body,
+            fields='id'
+        ).execute()
+        return jsonify({"message": "Note uploaded to Google Drive.", "file_id": file.get("id")}), 200
 
+    except HttpError as e:
+        logging.error(f"Google Drive upload error: {e}")
+        return jsonify({"error": "Failed to upload to Google Drive. Connection may need to be re-established."}), 500
     except Exception as e:
         logging.error(f"Error in /drive/upload: {e}")
         return jsonify({"error": "Server error during Drive upload."}), 500
+    finally:
+        if conn: conn.close()
 
+# ------------------ App Initialization ------------------
 if __name__ == "__main__":
-    try:
-        init_db()
-    except Exception:
-        pass
-
-    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    init_db()
+    # Use Gunicorn or another production server in a real environment
+    app.run(debug=False, port=5000)
