@@ -427,5 +427,6 @@ def upload_to_drive():
 if __name__ == "__main__":
     init_db()
     # Use Gunicorn or another production server in a real environment
-    app.run(debug=True, port=5000)
+    debug_on = os.environ.get("FLASK_ENV") == "development"
+    app.run(debug=debug_on, port=5000)
 
