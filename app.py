@@ -7,6 +7,7 @@ from psycopg2.extras import DictCursor
 from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
+import click
 from datetime import datetime
 
 # --- Google OAuth Imports ---
@@ -74,6 +75,12 @@ def init_db():
         logging.error(f"DB Init Error: {e}")
     finally:
         if conn: conn.close()
+
+@app.cli.command("init-db")
+def init_db_command():
+    """Creates the database tables."""
+    init_db()
+    click.echo("Initialized the database.")
 
 # ------------------ User Authentication Routes ------------------
 
@@ -425,8 +432,8 @@ def upload_to_drive():
 
 # ------------------ App Initialization ------------------
 if __name__ == "__main__":
-    init_db()
     # Use Gunicorn or another production server in a real environment
     debug_on = os.environ.get("FLASK_ENV") == "development"
     app.run(debug=debug_on, port=5000)
+
 
