@@ -29,7 +29,15 @@ for var in required_env_vars:
         raise RuntimeError(f"FATAL ERROR: Environment variable '{var}' is not set.")
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True)  # Allow all origins for dev
+
+@app.before_request
+def log_request_info():
+    logging.info(f"{request.method} {request.path} - {request.remote_addr}")
+
+@app.route("/", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok", "message": "Backend running"}), 200
 
 # ------------------ Database Configuration ------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -435,5 +443,3 @@ if __name__ == "__main__":
     # Use Gunicorn or another production server in a real environment
     debug_on = os.environ.get("FLASK_ENV") == "development"
     app.run(debug=debug_on, port=5000)
-
-
