@@ -29,7 +29,7 @@ for var in required_env_vars:
         raise RuntimeError(f"FATAL ERROR: Environment variable '{var}' is not set.")
 
 app = Flask(__name__)
-CORS(app)
+CORS(app) # This handles CORS permissions
 
 # ------------------ Database Configuration ------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -81,6 +81,12 @@ def init_db_command():
     """Creates the database tables."""
     init_db()
     click.echo("Initialized the database.")
+
+# ------------------ Root and Health Check ------------------
+@app.route("/")
+def index():
+    """A simple route to check if the backend is running."""
+    return jsonify({"message": "Backend is running", "status": "ok"})
 
 # ------------------ User Authentication Routes ------------------
 
@@ -432,4 +438,5 @@ def upload_to_drive():
 
 # ------------------ App Initialization ------------------
 if __name__ == "__main__":
-    app.run(debug=False, port=5000)
+    # Use debug=True for development for better error messages
+    app.run(debug=True, port=5000)
