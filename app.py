@@ -51,7 +51,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
                 google_creds_json TEXT
             );
             """)
@@ -103,14 +103,12 @@ def register():
     data = request.get_json()
     email = data.get("email", "").strip()
     password = data.get("password")
-    # FIX: Remove whitespace from password
     if password is not None:
         password = password.strip()
 
     if not email or not password or not re.match(r"[^@]+@[^@]+\.[^@]+", email):
         return jsonify({"error": "Invalid email or password"}), 400
 
-    # FIX: Always hash password before storing
     hashed_password = generate_password_hash(password)
     conn = get_db_connection()
     if not conn:
@@ -118,7 +116,8 @@ def register():
 
     try:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (email, hashed_password))
+            # FIX: Use password_hash column
+            cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s)", (email, hashed_password))
         conn.commit()
         return jsonify({"message": "User registered successfully"}), 201
     except psycopg2.IntegrityError:
@@ -135,7 +134,6 @@ def login():
     data = request.get_json()
     email = data.get("email", "").strip()
     password = data.get("password")
-    # FIX: Remove whitespace from password
     if password is not None:
         password = password.strip()
 
@@ -145,12 +143,12 @@ def login():
 
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT id, password FROM users WHERE email = %s", (email,))
+            # FIX: Use password_hash column
+            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
 
-        # FIX: Add debug logging for password hash comparison
-        if user and user["password"]:
-            valid = check_password_hash(user["password"], password)
+        if user and user["password_hash"]:
+            valid = check_password_hash(user["password_hash"], password)
             logging.info(f"Password check for {email}: {valid}")
             if valid:
                 return jsonify({"token": user["id"], "message": "Login successful"}), 200
@@ -269,5 +267,7 @@ def delete_text():
 if __name__ == "__main__":
     with app.app_context():
         init_db()
+    port = int(os.environ.get("PORT", 5001))
+    app.run(debug=False, host='0.0.0.0', port=port)
     port = int(os.environ.get("PORT", 5001))
     app.run(debug=False, host='0.0.0.0', port=port)
