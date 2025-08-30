@@ -1,9 +1,8 @@
 :root {
     --header-height: 72px;
-    --card-max-width: 550px;
+    --card-max-width: 650px;
     --font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
 
-    /* Refined Color Palette */
     --accent-left: #6a11cb;
     --accent-right: #2575fc;
     --accent-gradient: linear-gradient(135deg, var(--accent-left) 0%, var(--accent-right) 100%);
@@ -26,7 +25,6 @@
     --border-color: #dfe6e9;
     --white: #ffffff;
 
-    /* Effects */
     --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.04);
     --shadow-md: 0 4px 12px rgba(37, 117, 252, 0.1);
     --shadow-lg: 0 10px 30px rgba(37, 117, 252, 0.15);
@@ -102,13 +100,13 @@ main {
     padding: 40px 24px;
 }
 
-/* View Cards */
+/* Card views */
 .view {
     display: none;
     width: 100%;
     max-width: var(--card-max-width);
     background: var(--white);
-    padding: 32px 36px;
+    padding: 28px 32px;
     border-radius: var(--border-radius-md);
     box-shadow: var(--shadow-md);
     border: 1px solid var(--border-color);
@@ -124,13 +122,14 @@ main {
     overflow-y: auto;
 }
 
+/* Responsive */
 @media (max-width: 560px) {
     main {
         padding: 24px 16px;
     }
 
     .view {
-        padding: 24px;
+        padding: 20px;
     }
 }
 
@@ -140,19 +139,25 @@ h2 {
     margin-top: 0;
     color: var(--text-primary);
     font-weight: 700;
-    font-size: 1.8rem;
-    margin-bottom: 24px;
+    font-size: 1.6rem;
+    margin-bottom: 18px;
 }
 
 form {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 14px;
+}
+
+.input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
 }
 
 input,
 textarea {
-    padding: 14px 16px;
+    padding: 12px 14px;
     border-radius: var(--border-radius-sm);
     border: 1px solid var(--border-color);
     font-size: 1rem;
@@ -165,7 +170,7 @@ textarea {
 input:focus,
 textarea:focus {
     outline: none;
-    box-shadow: 0 0 0 3px rgba(37, 117, 252, 0.2);
+    box-shadow: 0 0 0 3px rgba(37, 117, 252, 0.15);
     border-color: var(--accent-right);
     background: var(--white);
 }
@@ -177,7 +182,7 @@ textarea {
 
 .form-link {
     text-align: center;
-    margin-top: 16px;
+    margin-top: 12px;
     font-size: 0.95rem;
 }
 
@@ -195,12 +200,12 @@ textarea {
 button {
     cursor: pointer;
     border: none;
-    padding: 14px 18px;
+    padding: 12px 16px;
     border-radius: var(--border-radius-sm);
     background: var(--accent-gradient);
     color: var(--white);
     font-weight: 700;
-    font-size: 1.05rem;
+    font-size: 1rem;
     box-shadow: var(--shadow-sm);
     transition: var(--transition-fast);
     outline: none;
@@ -216,14 +221,20 @@ button:active {
     box-shadow: var(--shadow-sm);
 }
 
+button:disabled {
+    opacity: 0.6;
+    transform: none;
+    cursor: not-allowed;
+}
+
 button:focus-visible {
-    box-shadow: 0 0 0 3px rgba(37, 117, 252, 0.3);
+    box-shadow: 0 0 0 3px rgba(37, 117, 252, 0.25);
 }
 
 .btn-row {
-    margin-top: 16px;
+    margin-top: 12px;
     display: flex;
-    gap: 12px;
+    gap: 10px;
 }
 
 #cancelEditBtn {
@@ -235,7 +246,7 @@ button:focus-visible {
 }
 
 .drive-btn {
-    margin-top: 16px;
+    margin-top: 8px;
     background: var(--white);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
@@ -246,18 +257,17 @@ button:focus-visible {
     color: var(--accent-right);
 }
 
-/* Small Action Buttons */
+/* Small Buttons */
 .btn-small {
-    padding: 5px 12px;
-    font-size: 0.8rem;
+    padding: 6px 10px;
+    font-size: 0.85rem;
     font-weight: 600;
     border-radius: var(--border-radius-sm);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    /* For potential icons */
+    gap: 6px;
 }
 
 .edit-btn {
@@ -293,23 +303,22 @@ button:focus-visible {
     background: var(--info-hover);
 }
 
-
-/* Main View Specifics */
+/* Main specifics */
 .textarea-container {
     position: relative;
 }
 
 .char-counter {
     position: absolute;
-    bottom: 10px;
+    bottom: 8px;
     right: 12px;
     font-size: 0.8rem;
     color: var(--text-secondary);
 }
 
-/* History View */
+/* History */
 #historyList {
-    margin-top: 20px;
+    margin-top: 18px;
     border-radius: var(--border-radius-sm);
     padding: 8px;
 }
@@ -317,7 +326,7 @@ button:focus-visible {
 .history-item {
     background: var(--white);
     border-radius: var(--border-radius-sm);
-    padding: 16px;
+    padding: 14px;
     margin-bottom: 12px;
     border: 1px solid var(--border-color);
     box-shadow: var(--shadow-sm);
@@ -342,12 +351,12 @@ button:focus-visible {
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
 }
 
 .history-item-title {
     font-weight: 600;
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     color: var(--text-primary);
     word-break: break-word;
     flex: 1;
@@ -358,7 +367,7 @@ button:focus-visible {
     color: var(--text-secondary);
     white-space: pre-wrap;
     font-size: 1rem;
-    padding: 12px;
+    padding: 10px;
     background: var(--light-bg);
     border-radius: var(--border-radius-sm);
     border: 1px solid var(--border-color);
@@ -371,9 +380,9 @@ button:focus-visible {
     gap: 12px;
     color: var(--dark-gray);
     font-size: 0.85rem;
-    padding-top: 12px;
+    padding-top: 10px;
     border-top: 1px solid var(--border-color);
-    margin-top: 12px;
+    margin-top: 10px;
 }
 
 .history-item-actions {
@@ -387,10 +396,10 @@ button:focus-visible {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px;
+    padding: 10px;
     background: var(--light-bg);
     border-radius: var(--border-radius-sm);
-    margin: 16px 0;
+    margin: 12px 0;
     border: 1px solid var(--border-color);
 }
 
@@ -417,22 +426,22 @@ label[for="selectAllNotes"] {
 
 #deleteSelectedBtn {
     margin: 0;
-    padding: 8px 16px;
+    padding: 8px 14px;
     font-size: 0.95rem;
 }
 
-/* Status Messages */
+/* Status messages */
 .message {
     text-align: center;
     min-height: 24px;
-    margin-top: 16px;
+    margin-top: 12px;
     font-size: 1rem;
     font-weight: 500;
     padding: 8px 12px;
     border-radius: var(--border-radius-sm);
 }
 
-/* Custom Confirm Modal */
+/* Modal */
 .modal-overlay {
     position: fixed;
     top: 0;
@@ -440,26 +449,26 @@ label[for="selectAllNotes"] {
     width: 100%;
     height: 100%;
     background: rgba(0, 0, 0, 0.5);
-    display: flex;
+    display: none;
     justify-content: center;
     align-items: center;
     z-index: 2000;
-    backdrop-filter: blur(5px);
+    backdrop-filter: blur(4px);
 }
 
 .modal-content {
     background: var(--white);
-    padding: 24px;
+    padding: 20px;
     border-radius: var(--border-radius-md);
     box-shadow: var(--shadow-lg);
     width: 90%;
-    max-width: 400px;
+    max-width: 420px;
     text-align: center;
 }
 
 .modal-content p {
-    margin: 0 0 20px 0;
-    font-size: 1.1rem;
+    margin: 0 0 16px 0;
+    font-size: 1.05rem;
     color: var(--text-primary);
 }
 
@@ -480,7 +489,6 @@ label[for="selectAllNotes"] {
 #confirmNo:hover {
     background: var(--dark-gray);
 }
-
 
 /* Keyframes */
 @keyframes fadeIn {
