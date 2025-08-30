@@ -101,13 +101,16 @@ def init_db_command():
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
-    # FIX: Strip whitespace from email to prevent registration issues.
     email = data.get("email", "").strip()
     password = data.get("password")
+    # FIX: Remove whitespace from password
+    if password is not None:
+        password = password.strip()
 
     if not email or not password or not re.match(r"[^@]+@[^@]+\.[^@]+", email):
         return jsonify({"error": "Invalid email or password"}), 400
 
+    # FIX: Always hash password before storing
     hashed_password = generate_password_hash(password)
     conn = get_db_connection()
     if not conn:
@@ -132,7 +135,10 @@ def login():
     data = request.get_json()
     email = data.get("email", "").strip()
     password = data.get("password")
-    
+    # FIX: Remove whitespace from password
+    if password is not None:
+        password = password.strip()
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
@@ -141,11 +147,14 @@ def login():
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT id, password FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
-        
-        if user and user["password"] and check_password_hash(user["password"], password):
-            return jsonify({"token": user["id"], "message": "Login successful"}), 200
-        else:
-            return jsonify({"error": "Invalid email or password"}), 401
+
+        # FIX: Add debug logging for password hash comparison
+        if user and user["password"]:
+            valid = check_password_hash(user["password"], password)
+            logging.info(f"Password check for {email}: {valid}")
+            if valid:
+                return jsonify({"token": user["id"], "message": "Login successful"}), 200
+        return jsonify({"error": "Invalid email or password"}), 401
     except Exception as e:
         logging.error(f"Login error: {e}")
         return jsonify({"error": "An internal error occurred"}), 500
@@ -155,7 +164,6 @@ def login():
 
 # ------------------ Note Management Routes ------------------
 def get_user_id_from_request(request):
-    """Helper to extract user ID from Authorization header."""
     auth_header = request.headers.get("Authorization")
     if isinstance(auth_header, str) and auth_header.startswith("Bearer "):
         return auth_header.split(" ")[1]
@@ -262,4 +270,4 @@ if __name__ == "__main__":
     with app.app_context():
         init_db()
     port = int(os.environ.get("PORT", 5001))
-    app.run(debug=True, host='0.0.0.0', port=port)
+    app.run(debug=False, host='0.0.0.0', port=port)
