@@ -10,6 +10,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import click
 from datetime import datetime, timezone, timedelta
 import jwt # Using PyJWT for token generation
+import sys # Import sys to read command-line arguments
 
 # --- Basic Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,10 +51,9 @@ def get_user_id_from_request(req):
         logging.warning("Invalid token provided.")
         return None
 
-# ------------------ CLI Command for DB Init ------------------
-@click.command(name='init-db')
-def init_db_command():
-    """CLI command to initialize the database tables."""
+# ------------------ Core DB Init Logic ------------------
+def _init_db_logic():
+    """Contains the actual logic to create database tables."""
     conn = get_db_connection()
     if not conn:
         click.echo("Failed to connect to the database.")
@@ -86,6 +86,13 @@ def init_db_command():
         click.echo(f"An error occurred: {e}")
     finally:
         conn.close()
+
+
+# ------------------ CLI Command for DB Init ------------------
+@click.command(name='init-db')
+def init_db_command():
+    """CLI command wrapper to initialize the database tables."""
+    _init_db_logic()
 
 app.cli.add_command(init_db_command)
 
@@ -120,7 +127,6 @@ def register():
             user_id = cur.fetchone()["id"]
         conn.commit()
         
-        # Create a token for the new user
         token = jwt.encode(
             {"user_id": user_id, "exp": datetime.now(timezone.utc) + timedelta(hours=24)},
             JWT_SECRET_KEY,
@@ -155,8 +161,6 @@ def login():
             cur.execute("SELECT * FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
             
-            # --- THIS IS THE FIX ---
-            # Correctly check the hashed password against the provided password.
             if user and check_password_hash(user["password"], password):
                 token = jwt.encode(
                     {"user_id": user["id"], "exp": datetime.now(timezone.utc) + timedelta(hours=24)},
@@ -165,7 +169,6 @@ def login():
                 )
                 return jsonify({"message": "Login successful", "token": token}), 200
             else:
-                # This error is now returned only if the email doesn't exist or the password is truly incorrect.
                 return jsonify({"error": "Invalid email or password"}), 401
     except Exception as e:
         logging.error(f"Login error: {e}")
@@ -193,7 +196,6 @@ def save_text():
     
     try:
         with conn.cursor() as cur:
-            # Upsert logic: Insert or update on conflict
             cur.execute("""
                 INSERT INTO notes (user_id, filename, content, updated_at)
                 VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
@@ -248,7 +250,6 @@ def delete_text():
     
     try:
         with conn.cursor() as cur:
-            # Using tuple for IN clause
             cur.execute("DELETE FROM notes WHERE user_id = %s AND filename IN %s", (user_id, tuple(filenames)))
         conn.commit()
         return jsonify({"message": f"{len(filenames)} note(s) deleted successfully"}), 200
@@ -260,5 +261,14 @@ def delete_text():
             conn.close()
 
 if __name__ == '__main__':
+    # --- THIS IS THE FIX ---
+    # Check if a command-line argument 'init-db' was passed.
+    if len(sys.argv) > 1 and sys.argv[1] == 'init-db':
+        with app.app_context():
+            click.echo("Initializing database directly from script...")
+            _init_db_logic()
+        sys.exit() # Exit after the command is run
+
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port, debug=True)
+
