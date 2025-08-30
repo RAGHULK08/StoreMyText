@@ -65,10 +65,8 @@
 
     const MAX_CHAR_LIMIT = 10000;
 
-    // Fix BACKEND_BASE_URL so fetch calls work both when served from backend and when running locally.
-    const BACKEND_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-        ? "http://localhost:5000"
-        : "";
+    // IMPORTANT: set backend base URL to your Render service (no trailing slash)
+    const BACKEND_BASE_URL = "https://savetext-0pk6.onrender.com";
 
     // --- Helpers ---
     function showStatusMessage(element, message, color) {
