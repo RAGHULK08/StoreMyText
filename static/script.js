@@ -1,9 +1,7 @@
 (function () {
-    // Self-executing anonymous function to encapsulate the script and avoid global scope pollution.
     "use strict";
 
     // --- DOM Element Selection ---
-    // A centralized object to hold all DOM element references for cleaner access.
     const UI = {
         views: {
             login: document.getElementById("loginSection"),
@@ -58,54 +56,50 @@
     };
 
     // --- Application State ---
-    // Manages the dynamic state of the application.
     const state = {
         loggedInUser: null,
-        editingNote: null, // Stores the filename of the note being edited
-        allNotes: [], // Cache for all fetched notes to enable client-side search
-        selectedNotes: new Set(), // Holds filenames of selected notes for bulk actions
+        editingNote: null, // filename being edited
+        allNotes: [], // cache
+        selectedNotes: new Set(),
     };
 
-    // --- Constants ---
-    // Use relative path for backend API (works for local and deployed)
-    // FIX: If running backend locally on port 5000, use full URL
-    const BACKEND_BASE_URL = window.location.hostname === "localhost" ? "http://localhost:5000" : "/";
     const MAX_CHAR_LIMIT = 10000;
 
-    // --- Utility Functions ---
+    // Fix BACKEND_BASE_URL so fetch calls work both when served from backend and when running locally.
+    const BACKEND_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+        ? "http://localhost:5000"
+        : "";
 
-    /**
-     * Displays a status message to the user.
-     * @param {HTMLElement} element - The message container element.
-     * @param {string} message - The text to display.
-     * @param {string} color - The color of the message text.
-     */
+    // --- Helpers ---
     function showStatusMessage(element, message, color) {
+        if (!element) return;
         element.textContent = message;
-        element.style.color = color;
-        // The message will auto-clear on the next successful action.
+        element.style.color = color || "#000";
     }
 
-    // --- Password Show/Hide Toggle ---
-    function addPasswordToggle(input, container) {
-        const toggle = document.createElement("span");
-        toggle.style.cursor = "pointer";
+    // Add simple show/hide password toggle appended after the input
+    function addPasswordToggle(input) {
+        if (!input || input.dataset.hasToggle) return;
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "btn-small";
         toggle.style.marginLeft = "8px";
-        toggle.style.userSelect = "none";
-        toggle.title = "Show/Hide Password";
-        toggle.onclick = () => {
-            input.type = input.type === "password" ? "text" : "password";
-        };
-        container.appendChild(toggle);
+        toggle.textContent = "Show";
+        toggle.addEventListener("click", () => {
+            if (input.type === "password") {
+                input.type = "text";
+                toggle.textContent = "Hide";
+            } else {
+                input.type = "password";
+                toggle.textContent = "Show";
+            }
+        });
+        input.dataset.hasToggle = "1";
+        // Insert after input
+        input.parentNode.insertBefore(toggle, input.nextSibling);
     }
-    // Add to login password field
-    addPasswordToggle(UI.inputs.loginPassword, UI.inputs.loginPassword.parentElement);
 
-    /**
-     * A promise-based custom confirmation dialog to replace the blocking `window.confirm`.
-     * @param {string} message - The confirmation message to display.
-     * @returns {Promise<boolean>} - Resolves with true if "Yes" is clicked, false otherwise.
-     */
+    // Custom confirmation dialog (promise-based)
     function customConfirm(message) {
         return new Promise((resolve) => {
             UI.other.confirmMsg.textContent = message;
@@ -115,7 +109,6 @@
                 cleanup();
                 resolve(true);
             };
-
             const noListener = () => {
                 cleanup();
                 resolve(false);
@@ -132,22 +125,18 @@
         });
     }
 
-    /**
-     * Switches the active view, hiding all others.
-     * @param {string} viewName - The key of the view to show (e.g., 'login', 'main').
-     */
     function switchView(viewName) {
         Object.values(UI.views).forEach(view => view.classList.remove('active'));
         if (UI.views[viewName]) {
             UI.views[viewName].classList.add('active');
+            // focus first input for accessibility
+            const inputs = UI.views[viewName].querySelectorAll('input, textarea, button');
+            if (inputs.length) inputs[0].focus();
         }
     }
 
-    // --- Core Application Logic ---
+    // --- Core Logic ---
 
-    /**
-     * Initializes the application, checks login status, and sets up initial view.
-     */
     function initialize() {
         const user = localStorage.getItem("loggedInUser");
         if (user) {
@@ -157,12 +146,12 @@
         } else {
             switchView("login");
         }
+        addPasswordToggle(UI.inputs.loginPassword);
+        addPasswordToggle(UI.inputs.registerPassword);
+        UI.other.charCounter.textContent = `0/${MAX_CHAR_LIMIT}`;
         setupEventListeners();
     }
 
-    /**
-     * Fetches the user's note history from the backend.
-     */
     async function fetchHistory() {
         if (!state.loggedInUser) return;
         showStatusMessage(UI.messages.historyStatus, "Loading notes...", "#444");
@@ -173,9 +162,19 @@
                 body: JSON.stringify({ emailid: state.loggedInUser }),
             });
             if (!response.ok) throw new Error("Failed to fetch history.");
-
             const notes = await response.json();
-            state.allNotes = notes.sort((a, b) => (b.pinned === a.pinned) ? 0 : b.pinned ? 1 : -1);
+
+            // Ensure pinned first, newest within pinned/unpinned
+            notes.sort((a, b) => {
+                const aPinned = !!a.pinned;
+                const bPinned = !!b.pinned;
+                if (aPinned !== bPinned) return aPinned ? -1 : 1;
+                const aTime = new Date(a.created_at).getTime() || 0;
+                const bTime = new Date(b.created_at).getTime() || 0;
+                return bTime - aTime;
+            });
+
+            state.allNotes = notes;
             renderHistory(state.allNotes);
             showStatusMessage(UI.messages.historyStatus, "", "black");
         } catch (error) {
@@ -184,31 +183,29 @@
         }
     }
 
-    /**
-     * Renders the list of notes in the history view.
-     * @param {Array} notes - An array of note objects to render.
-     */
     function renderHistory(notes) {
-        UI.containers.historyList.innerHTML = ""; // Clear previous list
-        if (notes.length === 0) {
+        UI.containers.historyList.innerHTML = "";
+        if (!notes || notes.length === 0) {
             UI.containers.historyList.innerHTML = "<p>No notes found.</p>";
             UI.containers.bulkActions.style.display = "none";
+            UI.buttons.deleteSelected.style.display = "none";
             return;
         }
 
         UI.containers.bulkActions.style.display = "flex";
-
         notes.forEach(note => {
             const noteDiv = document.createElement("div");
             noteDiv.className = "history-item";
             noteDiv.dataset.filename = note.filename;
 
-            // Checkbox for selection
+            // Checkbox
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
             checkbox.className = "note-select-checkbox";
             checkbox.checked = state.selectedNotes.has(note.filename);
-            checkbox.addEventListener("change", () => toggleNoteSelection(note.filename));
+            checkbox.addEventListener("change", () => {
+                toggleNoteSelection(note.filename, checkbox.checked);
+            });
 
             const mainContent = document.createElement("div");
             mainContent.className = "history-item-main";
@@ -223,13 +220,11 @@
             const actions = document.createElement("div");
             actions.className = "history-item-actions";
 
-            // Edit Button
             const editBtn = document.createElement("button");
             editBtn.textContent = "Edit";
             editBtn.className = "btn-small edit-btn";
             editBtn.onclick = () => startEdit(note);
 
-            // Pin Button
             const pinBtn = document.createElement("button");
             pinBtn.textContent = note.pinned ? "Unpin" : "Pin";
             pinBtn.className = `btn-small pin-btn ${note.pinned ? 'pinned' : ''}`;
@@ -240,63 +235,56 @@
 
             const content = document.createElement("div");
             content.className = "history-item-content";
-            content.textContent = note.filecontent;
+            content.textContent = note.filecontent || "";
 
             const footer = document.createElement("div");
             footer.className = "history-item-footer";
             const dateSpan = document.createElement("span");
             dateSpan.textContent = `Saved: ${new Date(note.created_at).toLocaleString()}`;
 
-            // Copy Button
             const copyBtn = document.createElement("button");
             copyBtn.textContent = "Copy Text";
             copyBtn.className = "btn-small copy-btn";
-            copyBtn.onclick = () => copyToClipboard(note.filecontent, copyBtn);
+            copyBtn.onclick = () => copyToClipboard(note.filecontent || "", copyBtn);
 
             footer.append(dateSpan, copyBtn);
             mainContent.append(header, content, footer);
             noteDiv.append(checkbox, mainContent);
             UI.containers.historyList.appendChild(noteDiv);
         });
+
         updateBulkActionUI();
     }
 
-    // --- Event Handlers & Associated Logic ---
-
-    /**
-     * Sets up all the event listeners for the application.
-     */
+    // --- Event Setup ---
     function setupEventListeners() {
-        // View Switching
         UI.buttons.goToRegister.addEventListener("click", (e) => { e.preventDefault(); switchView("register"); });
         UI.buttons.goToLogin.addEventListener("click", (e) => { e.preventDefault(); switchView("login"); });
         UI.buttons.history.addEventListener("click", () => { switchView("history"); fetchHistory(); });
         UI.buttons.backToMain.addEventListener("click", () => switchView("main"));
 
-        // Authentication
         UI.forms.login.addEventListener("submit", handleLogin);
         UI.forms.register.addEventListener("submit", handleRegister);
         UI.buttons.logout.addEventListener("click", handleLogout);
 
-        // Note Management
         UI.forms.note.addEventListener("submit", handleSaveNote);
         UI.buttons.cancelEdit.addEventListener("click", cancelEdit);
+
         UI.inputs.textInput.addEventListener("input", () => {
             const count = UI.inputs.textInput.value.length;
             UI.other.charCounter.textContent = `${count}/${MAX_CHAR_LIMIT}`;
         });
 
-        // History View Actions
         UI.inputs.searchNotes.addEventListener("input", handleSearch);
         UI.inputs.selectAllNotes.addEventListener("change", toggleSelectAll);
         UI.buttons.deleteSelected.addEventListener("click", handleDeleteSelected);
 
-        // Google Drive
         UI.buttons.connectDrive.addEventListener("click", () => {
             window.location.href = `${BACKEND_BASE_URL}/drive/login?email=${encodeURIComponent(state.loggedInUser)}`;
         });
     }
 
+    // --- Auth Handlers ---
     async function handleLogin(e) {
         e.preventDefault();
         const email = UI.inputs.loginEmail.value.trim();
@@ -305,7 +293,8 @@
             showStatusMessage(UI.messages.login, "Please enter both email and password.", "red");
             return;
         }
-        UI.buttons.save.disabled = true;
+        const submitBtn = UI.forms.login.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
         showStatusMessage(UI.messages.login, "Logging in...", "#444");
         try {
             const response = await fetch(`${BACKEND_BASE_URL}/login`, {
@@ -334,7 +323,7 @@
                 showStatusMessage(UI.messages.login, error.message, "red");
             }
         } finally {
-            UI.buttons.save.disabled = false;
+            submitBtn.disabled = false;
         }
     }
 
@@ -346,6 +335,9 @@
             showStatusMessage(UI.messages.register, "Please fill in all fields.", "red");
             return;
         }
+        const submitBtn = UI.forms.register.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        showStatusMessage(UI.messages.register, "Registering...", "#444");
         try {
             const response = await fetch(`${BACKEND_BASE_URL}/register`, {
                 method: "POST",
@@ -359,8 +351,13 @@
                 throw new Error("Server error: Could not parse response.");
             }
             if (response.ok) {
-                showStatusMessage(UI.messages.login, "Registration successful! Please log in.", "green");
-                switchView("login");
+                showStatusMessage(UI.messages.register, "Registration successful! Redirecting to login...", "green");
+                // Clear register form
+                UI.forms.register.reset();
+                setTimeout(() => {
+                    showStatusMessage(UI.messages.login, "Registration completed. Please log in.", "green");
+                    switchView("login");
+                }, 600);
             } else {
                 throw new Error(result.error || "Registration failed.");
             }
@@ -370,6 +367,8 @@
             } else {
                 showStatusMessage(UI.messages.register, error.message, "red");
             }
+        } finally {
+            submitBtn.disabled = false;
         }
     }
 
@@ -380,8 +379,13 @@
         switchView("login");
     }
 
+    // --- Note Handlers ---
     async function handleSaveNote(e) {
         e.preventDefault();
+        if (!state.loggedInUser) {
+            showStatusMessage(UI.messages.mainStatus, "You must be logged in to save notes.", "red");
+            return;
+        }
         const title = UI.inputs.noteTitle.value.trim();
         const content = UI.inputs.textInput.value;
         if (!content) {
@@ -390,34 +394,39 @@
         }
 
         const endpoint = state.editingNote ? "/update" : "/save";
+        const method = state.editingNote ? "PUT" : "POST";
         const body = {
             emailid: state.loggedInUser,
             title: title,
             filecontent: content,
-            filename: state.editingNote, // will be null for new notes
+            filename: state.editingNote || undefined,
         };
 
+        UI.buttons.save.disabled = true;
         showStatusMessage(UI.messages.mainStatus, "Saving...", "#444");
         try {
             const response = await fetch(`${BACKEND_BASE_URL}${endpoint}`, {
-                method: state.editingNote ? "PUT" : "POST",
+                method,
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(body),
             });
-            const result = await response.json();
+            const result = await response.json().catch(() => ({}));
             if (response.ok) {
-                showStatusMessage(UI.messages.mainStatus, result.message, "green");
+                showStatusMessage(UI.messages.mainStatus, result.message || "Saved successfully", "green");
+                UI.forms.note.reset();
+                UI.other.charCounter.textContent = `0/${MAX_CHAR_LIMIT}`;
                 if (state.editingNote) {
-                    cancelEdit(); // Reset form after successful edit
-                } else {
-                    UI.forms.note.reset(); // Reset for new note
-                    UI.other.charCounter.textContent = `0/${MAX_CHAR_LIMIT}`;
+                    cancelEdit();
                 }
+                // Refresh history so users see the new/updated note immediately
+                await fetchHistory();
             } else {
                 throw new Error(result.error || "Failed to save note.");
             }
         } catch (error) {
-            showStatusMessage(UI.messages.mainStatus, error.message, "red");
+            showStatusMessage(UI.messages.mainStatus, error.message || "Server error", "red");
+        } finally {
+            UI.buttons.save.disabled = false;
         }
     }
 
@@ -425,7 +434,7 @@
         const searchTerm = UI.inputs.searchNotes.value.trim().toLowerCase();
         const filteredNotes = state.allNotes.filter(note =>
             (note.title || '').toLowerCase().includes(searchTerm) ||
-            note.filecontent.toLowerCase().includes(searchTerm)
+            (note.filecontent || '').toLowerCase().includes(searchTerm)
         );
         renderHistory(filteredNotes);
     }
@@ -441,7 +450,7 @@
                 method: "DELETE",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ emailid: state.loggedInUser, filename }),
-            })
+            }).then(res => ({ ok: res.ok })).catch(() => ({ ok: false }))
         );
 
         try {
@@ -453,20 +462,19 @@
             showStatusMessage(UI.messages.historyStatus, "An error occurred during deletion.", "red");
         } finally {
             state.selectedNotes.clear();
-            fetchHistory(); // Refresh the list
+            await fetchHistory();
         }
     }
 
-    // --- Helper functions for note actions ---
-
+    // --- note action helpers ---
     function startEdit(note) {
         state.editingNote = note.filename;
         UI.inputs.noteTitle.value = note.title || '';
-        UI.inputs.textInput.value = note.filecontent;
+        UI.inputs.textInput.value = note.filecontent || '';
         UI.other.mainTitle.textContent = "Edit Your Note";
         UI.buttons.save.textContent = "Update Note";
         UI.buttons.cancelEdit.style.display = "block";
-        UI.other.charCounter.textContent = `${note.filecontent.length}/${MAX_CHAR_LIMIT}`;
+        UI.other.charCounter.textContent = `${(note.filecontent || '').length}/${MAX_CHAR_LIMIT}`;
         switchView("main");
     }
 
@@ -488,7 +496,9 @@
                 body: JSON.stringify({ emailid: state.loggedInUser, filename, pinned: shouldPin }),
             });
             if (response.ok) {
-                fetchHistory(); // Refresh to show updated pin status
+                await fetchHistory();
+            } else {
+                console.error("Pin operation failed");
             }
         } catch (error) {
             console.error("Pin Error:", error);
@@ -500,17 +510,16 @@
             const originalText = button.textContent;
             button.textContent = "Copied!";
             setTimeout(() => { button.textContent = originalText; }, 2000);
-        }).catch(err => console.error('Failed to copy text: ', err));
+        }).catch(err => {
+            console.error('Failed to copy text: ', err);
+            showStatusMessage(UI.messages.historyStatus, "Copy failed.", "red");
+        });
     }
 
-    // --- Bulk Selection Logic ---
-
-    function toggleNoteSelection(filename) {
-        if (state.selectedNotes.has(filename)) {
-            state.selectedNotes.delete(filename);
-        } else {
-            state.selectedNotes.add(filename);
-        }
+    // --- Bulk selection ---
+    function toggleNoteSelection(filename, checked) {
+        if (checked) state.selectedNotes.add(filename);
+        else state.selectedNotes.delete(filename);
         updateBulkActionUI();
     }
 
@@ -520,9 +529,7 @@
         const visibleNotes = Array.from(checkboxes).map(cb => cb.closest('.history-item').dataset.filename);
 
         state.selectedNotes.clear();
-        if (isChecked) {
-            visibleNotes.forEach(filename => state.selectedNotes.add(filename));
-        }
+        if (isChecked) visibleNotes.forEach(fn => state.selectedNotes.add(fn));
 
         checkboxes.forEach(cb => cb.checked = isChecked);
         updateBulkActionUI();
@@ -537,10 +544,6 @@
         UI.buttons.deleteSelected.style.display = hasSelection ? "block" : "none";
     }
 
-
-    // --- App Initialization ---
-    // The DOMContentLoaded event ensures the script runs only after the entire HTML is loaded.
+    // --- init ---
     document.addEventListener("DOMContentLoaded", initialize);
-
 })();
-
