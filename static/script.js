@@ -314,12 +314,15 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ emailid: email, password: password }),
             });
+            let result = {};
+            try {
+                result = await response.json();
+            } catch {
+                throw new Error("Server error: Could not parse response.");
+            }
             if (!response.ok) {
-                let result = {};
-                try { result = await response.json(); } catch { }
                 throw new Error(result.error || "Login failed.");
             }
-            const result = await response.json();
             state.loggedInUser = email;
             localStorage.setItem("loggedInUser", email);
             UI.buttons.logout.style.display = "block";
@@ -327,7 +330,7 @@
             switchView("main");
         } catch (error) {
             if (error.name === "TypeError") {
-                showStatusMessage(UI.messages.login, "Network error: Could not connect to server.", "red");
+                showStatusMessage(UI.messages.login, "Network error: Could not connect to server. Please check your connection or try again later.", "red");
             } else {
                 showStatusMessage(UI.messages.login, error.message, "red");
             }
@@ -345,13 +348,17 @@
             return;
         }
         try {
-            // FIX: Add missing slash to endpoint
             const response = await fetch(`${BACKEND_BASE_URL}/register`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ emailid: email, password: password }),
             });
-            const result = await response.json();
+            let result = {};
+            try {
+                result = await response.json();
+            } catch {
+                throw new Error("Server error: Could not parse response.");
+            }
             if (response.ok) {
                 showStatusMessage(UI.messages.login, "Registration successful! Please log in.", "green");
                 switchView("login");
@@ -359,7 +366,11 @@
                 throw new Error(result.error || "Registration failed.");
             }
         } catch (error) {
-            showStatusMessage(UI.messages.register, error.message, "red");
+            if (error.name === "TypeError") {
+                showStatusMessage(UI.messages.register, "Network error: Could not connect to server. Please check your connection or try again later.", "red");
+            } else {
+                showStatusMessage(UI.messages.register, error.message, "red");
+            }
         }
     }
 
