@@ -22,9 +22,6 @@ from google.auth.exceptions import RefreshError
 # --- Basic Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Environment Variable Check ---
-# In a real app, you'd want to ensure these are set.
-# For this example, we'll use the provided DATABASE_URL.
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://savetext_db_user:1YaL7yXH4rvZqCoC8K53Qy3PAaKod0Jh@dpg-d2f27didbo4c73918te0-a/savetext_db")
 
 app = Flask(__name__)
@@ -149,10 +146,9 @@ def login():
             cur.execute("SELECT id, password FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
         
-        if user and check_password_hash(user["password"], password):
-            # A more robust solution would use JWTs (JSON Web Tokens)
-            # For simplicity, we are returning a simple token (user_id)
-            # In a real app, this is NOT secure.
+        # FIX: Check if user exists AND has a password before checking the hash.
+        # This prevents an error if an old user record has a NULL password.
+        if user and user["password"] and check_password_hash(user["password"], password):
             return jsonify({"token": user["id"], "message": "Login successful"}), 200
         else:
             return jsonify({"error": "Invalid email or password"}), 401
@@ -269,9 +265,8 @@ def delete_text():
 
 # ------------------ App Initialization ------------------
 if __name__ == "__main__":
-    # Initialize DB when running directly (development convenience)
     with app.app_context():
         init_db()
     port = int(os.environ.get("PORT", 5001))
-    # Change host to '0.0.0.0' to be accessible externally
     app.run(debug=True, host='0.0.0.0', port=port)
+
