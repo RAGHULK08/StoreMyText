@@ -25,7 +25,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://savetext_db_user:1YaL7yXH4rvZqCoC8K53Qy3PAaKod0Jh@dpg-d2f27didbo4c73918te0-a/savetext_db")
 
 app = Flask(__name__)
-# In a production app, you would want to be more specific with the origins
 CORS(app, supports_credentials=True)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-for-session")
 
@@ -48,9 +47,6 @@ def init_db():
         return
     try:
         with conn.cursor() as cur:
-            # This statement creates the table WITH the password column.
-            # If your table was created without it, you must add it manually
-            # or drop the table and let this code recreate it.
             cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -105,7 +101,8 @@ def init_db_command():
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
-    email = data.get("email")
+    # FIX: Strip whitespace from email to prevent registration issues.
+    email = data.get("email", "").strip()
     password = data.get("password")
 
     if not email or not password or not re.match(r"[^@]+@[^@]+\.[^@]+", email):
@@ -133,7 +130,7 @@ def register():
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
-    email = data.get("email")
+    email = data.get("email", "").strip()
     password = data.get("password")
     
     conn = get_db_connection()
@@ -142,12 +139,9 @@ def login():
 
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            # This query will succeed once the 'password' column exists in the 'users' table.
             cur.execute("SELECT id, password FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
         
-        # FIX: Check if user exists AND has a password before checking the hash.
-        # This prevents an error if an old user record has a NULL password.
         if user and user["password"] and check_password_hash(user["password"], password):
             return jsonify({"token": user["id"], "message": "Login successful"}), 200
         else:
@@ -242,7 +236,7 @@ def delete_text():
         return jsonify({"error": "Authorization required"}), 401
     
     data = request.get_json()
-    filenames = data.get("filenames") # Expecting a list of filenames
+    filenames = data.get("filenames")
     if not filenames or not isinstance(filenames, list):
         return jsonify({"error": "Invalid request, filenames must be a list"}), 400
     
