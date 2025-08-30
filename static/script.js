@@ -309,7 +309,7 @@
         UI.buttons.save.disabled = true;
         showStatusMessage(UI.messages.login, "Logging in...", "#444");
         try {
-            const response = await fetch(`${BACKEND_BASE_URL}login`, {
+            const response = await fetch(`${BACKEND_BASE_URL}/login`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ emailid: email, password: password }),
@@ -345,6 +345,7 @@
             return;
         }
         try {
+            // FIX: Add missing slash to endpoint
             const response = await fetch(`${BACKEND_BASE_URL}/register`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
