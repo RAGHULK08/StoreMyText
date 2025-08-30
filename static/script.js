@@ -293,7 +293,7 @@
 
         // Google Drive
         UI.buttons.connectDrive.addEventListener("click", () => {
-            window.location.href = `${BACKEND_BASE_URL}/drive/login?email=${state.loggedInUser}`;
+            window.location.href = `${BACKEND_BASE_URL}/drive/login?email=${encodeURIComponent(state.loggedInUser)}`;
         });
     }
 
@@ -543,3 +543,4 @@
     document.addEventListener("DOMContentLoaded", initialize);
 
 })();
+
