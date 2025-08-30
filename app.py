@@ -22,6 +22,9 @@ from google.auth.exceptions import RefreshError
 # --- Basic Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# --- Environment Variable Check ---
+# In a real app, you'd want to ensure these are set.
+# For this example, we'll use the provided DATABASE_URL.
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://savetext_db_user:1YaL7yXH4rvZqCoC8K53Qy3PAaKod0Jh@dpg-d2f27didbo4c73918te0-a/savetext_db")
 
 app = Flask(__name__)
@@ -48,6 +51,9 @@ def init_db():
         return
     try:
         with conn.cursor() as cur:
+            # This statement creates the table WITH the password column.
+            # If your table was created without it, you must add it manually
+            # or drop the table and let this code recreate it.
             cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -137,9 +143,9 @@ def login():
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
 
-    user_id = None
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
+            # This query will succeed once the 'password' column exists in the 'users' table.
             cur.execute("SELECT id, password FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
         
@@ -264,7 +270,8 @@ def delete_text():
 # ------------------ App Initialization ------------------
 if __name__ == "__main__":
     # Initialize DB when running directly (development convenience)
-    init_db()
+    with app.app_context():
+        init_db()
     port = int(os.environ.get("PORT", 5001))
-
+    # Change host to '0.0.0.0' to be accessible externally
     app.run(debug=True, host='0.0.0.0', port=port)
