@@ -1,16 +1,19 @@
 import os
 import re
-import psycopg2
 import logging
 from io import BytesIO
+from datetime import datetime
+
+import click
+import psycopg2
 from psycopg2.extras import DictCursor
+from psycopg2 import sql
+
 from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-import click
-from datetime import datetime
 
-# --- Google OAuth Imports ---
+# Google API imports (unchanged)
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
@@ -19,10 +22,10 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request as GoogleRequest
 from google.auth.exceptions import RefreshError
 
-# --- Basic Logging Configuration ---
+# --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Environment Variable Check ---
+# --- Required env vars (fail fast) ---
 required_env_vars = ["DATABASE_URL", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "REDIRECT_URI"]
 for var in required_env_vars:
     if not os.environ.get(var):
@@ -30,27 +33,103 @@ for var in required_env_vars:
         raise RuntimeError(f"FATAL ERROR: Environment variable '{var}' is not set.")
 
 app = Flask(__name__)
-CORS(app)  # allow cross-origin access (adjust in production)
+CORS(app)  # keep flexible for now; tighten origins in production
 
 # ------------------ Database Configuration ------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
-# Adjust for Heroku's PostgreSQL scheme if needed
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 
 def get_db_connection():
-    """Establishes and returns a database connection or None on failure."""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         return conn
-    except psycopg2.OperationalError as e:
+    except Exception as e:
         logging.error(f"Database connection error: {e}")
         return None
 
 
+# Globals to store detected column names
+USERS_EMAIL_COL = "emailid"  # fallback
+NOTES_EMAIL_COL = "emailid"  # fallback
+
+
+def detect_email_like_column(conn, table_name):
+    """
+    Returns the actual column name in `table_name` that most likely stores an email.
+    Strategy:
+      - Query information_schema.columns for column_name
+      - prefer exact matches ('emailid', 'email', 'email_id')
+      - else pick the first column containing substring 'email' case-insensitive
+      - if none found, return None
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = %s
+                ORDER BY ordinal_position
+                """,
+                (table_name.lower(),),
+            )
+            cols = [r[0] for r in cur.fetchall()]
+    except Exception as e:
+        logging.error(f"Schema detection query failed for table {table_name}: {e}")
+        return None
+
+    if not cols:
+        return None
+
+    # Prioritized names
+    preferred = ["emailid", "email", "email_id", "Email", "EmailId", "EmailID"]
+    for p in preferred:
+        for c in cols:
+            if c.lower() == p.lower():
+                return c
+
+    # Fallback: first column that contains 'email'
+    for c in cols:
+        if "email" in c.lower():
+            return c
+
+    return None
+
+
+def set_column_mappings():
+    """Detect and set USERS_EMAIL_COL and NOTES_EMAIL_COL based on existing schema."""
+    global USERS_EMAIL_COL, NOTES_EMAIL_COL
+    conn = get_db_connection()
+    if not conn:
+        logging.warning("Could not connect to DB to detect column mappings; using defaults.")
+        return
+    try:
+        users_col = detect_email_like_column(conn, "users")
+        notes_col = detect_email_like_column(conn, "notes")
+
+        if users_col:
+            USERS_EMAIL_COL = users_col
+            logging.info(f"Detected users email column: {USERS_EMAIL_COL}")
+        else:
+            logging.warning("Could not detect users email-like column; using fallback 'emailid'.")
+
+        if notes_col:
+            NOTES_EMAIL_COL = notes_col
+            logging.info(f"Detected notes email column: {NOTES_EMAIL_COL}")
+        else:
+            logging.warning("Could not detect notes email-like column; using fallback 'emailid'.")
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def init_db():
-    """Initializes the database tables if they don't exist."""
+    """Create tables if they don't exist (safe to run on existing DB)."""
     conn = get_db_connection()
     if not conn:
         logging.error("init_db: no database connection available.")
@@ -75,7 +154,7 @@ def init_db():
                 );
             """)
             conn.commit()
-            logging.info("Database tables initialized successfully.")
+            logging.info("Database tables initialized (if not present).")
     except Exception as e:
         logging.error(f"DB Init Error: {e}")
         try:
@@ -89,18 +168,11 @@ def init_db():
             pass
 
 
-@app.cli.command("init-db")
-def init_db_command():
-    """Creates the database tables."""
-    init_db()
-    click.echo("Initialized the database.")
-
-
-# ------------------ Root and Health Check ------------------
-@app.route("/")
-def index():
-    """Simple health check."""
-    return jsonify({"message": "Backend is running", "status": "ok"}), 200
+# Initialize mappings early (attempt)
+try:
+    set_column_mappings()
+except Exception as e:
+    logging.warning(f"set_column_mappings initial call failed: {e}")
 
 
 # ------------------ Utilities ------------------
@@ -116,33 +188,47 @@ def sanitize_filename_part(s: str) -> str:
 
 
 def generate_filename(email):
-    """Generates a unique filename based on email and timestamp."""
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
     localpart = email.split('@')[0] if '@' in email else email
     sanitized_email = sanitize_filename_part(localpart)
     return f"{sanitized_email}_{timestamp}.txt"
 
 
-# ------------------ User Authentication Routes ------------------
+# ------------------ Routes ------------------
+@app.route("/")
+def index():
+    return jsonify({"message": "Backend is running", "status": "ok"}), 200
+
+
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json(silent=True) or {}
     email = data.get("emailid")
     password = data.get("password")
-
     if not email or not password:
         return jsonify({"error": "Email and password are required."}), 400
     if not validate_email(email):
         return jsonify({"error": "Invalid email format."}), 400
-    hashed_password = generate_password_hash(password)
 
+    hashed_password = generate_password_hash(password)
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database service unavailable."}), 503
 
+    # Ensure mappings up-to-date (in case DB changed)
+    try:
+        set_column_mappings()
+    except Exception:
+        pass
+
     try:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO users (emailid, password_hash) VALUES (%s, %s)", (email, hashed_password))
+            # Use psycopg2.sql to safely inject identifier (column name)
+            insert_q = sql.SQL("INSERT INTO {table} ({email_col}, password_hash) VALUES (%s, %s)").format(
+                table=sql.Identifier("users"),
+                email_col=sql.Identifier(USERS_EMAIL_COL)
+            )
+            cur.execute(insert_q, (email, hashed_password))
             conn.commit()
         return jsonify({"message": "User registered successfully."}), 201
     except psycopg2.IntegrityError:
@@ -173,18 +259,25 @@ def login():
 
     if not email or not password:
         return jsonify({"error": "Email and password are required."}), 400
+    if not validate_email(email):
+        return jsonify({"error": "Invalid email format."}), 400
 
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database service unavailable."}), 503
 
     try:
+        # Refresh mapping in case DB schema changed
+        set_column_mappings()
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE emailid = %s", (email,))
+            sel_q = sql.SQL("SELECT * FROM {table} WHERE {email_col} = %s").format(
+                table=sql.Identifier("users"),
+                email_col=sql.Identifier(USERS_EMAIL_COL)
+            )
+            cur.execute(sel_q, (email,))
             user = cur.fetchone()
 
-        if user and check_password_hash(user["password_hash"], password):
-            # Currently we return a simple success message; consider returning a token (JWT) in future.
+        if user and check_password_hash(user.get("password_hash"), password):
             return jsonify({"message": "Login successful."}), 200
         else:
             return jsonify({"error": "Invalid email or password."}), 401
@@ -198,15 +291,14 @@ def login():
             pass
 
 
-# ------------------ Note Management Routes ------------------
 @app.route("/save", methods=["POST"])
 def save_text():
     data = request.get_json(silent=True) or {}
     email = data.get("emailid")
     content = data.get("filecontent")
-    title = data.get("title", "Untitled Note")  # Default title
+    title = data.get("title", "Untitled Note")
 
-    if not email or not content:
+    if not email or content is None:
         return jsonify({"error": "Email and content are required."}), 400
     if not validate_email(email):
         return jsonify({"error": "Invalid email format."}), 400
@@ -217,11 +309,13 @@ def save_text():
         return jsonify({"error": "Database service unavailable."}), 503
 
     try:
+        set_column_mappings()
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO notes (filename, emailid, title, filecontent) VALUES (%s, %s, %s, %s)",
-                (filename, email, title, content)
+            ins_q = sql.SQL("INSERT INTO {table} (filename, {email_col}, title, filecontent) VALUES (%s, %s, %s, %s)").format(
+                table=sql.Identifier("notes"),
+                email_col=sql.Identifier(NOTES_EMAIL_COL)
             )
+            cur.execute(ins_q, (filename, email, title, content))
             conn.commit()
         return jsonify({"message": "Note saved successfully.", "filename": filename}), 201
     except Exception as e:
@@ -253,14 +347,16 @@ def get_history():
         return jsonify({"error": "Database service unavailable."}), 503
 
     try:
+        set_column_mappings()
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute(
-                "SELECT filename, title, filecontent, created_at, pinned FROM notes WHERE emailid = %s",
-                (email,)
+            sel_q = sql.SQL("SELECT filename, title, filecontent, created_at, pinned FROM {table} WHERE {email_col} = %s").format(
+                table=sql.Identifier("notes"),
+                email_col=sql.Identifier(NOTES_EMAIL_COL)
             )
+            cur.execute(sel_q, (email,))
             rows = cur.fetchall()
             notes = [dict(row) for row in rows]
-        # Sort pinned first, then by created_at descending within each group
+        # Sort pinned first then newest within groups
         notes.sort(key=lambda n: (not bool(n.get('pinned')), -float(n.get('created_at').timestamp() if n.get('created_at') else 0)))
         return jsonify(notes), 200
     except Exception as e:
@@ -291,11 +387,13 @@ def update_note():
         return jsonify({"error": "Database service unavailable."}), 503
 
     try:
+        set_column_mappings()
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE notes SET title = %s, filecontent = %s WHERE filename = %s AND emailid = %s",
-                (title, content, filename, email)
+            upd_q = sql.SQL("UPDATE {table} SET title = %s, filecontent = %s WHERE filename = %s AND {email_col} = %s").format(
+                table=sql.Identifier("notes"),
+                email_col=sql.Identifier(NOTES_EMAIL_COL)
             )
+            cur.execute(upd_q, (title, content, filename, email))
             conn.commit()
             if cur.rowcount == 0:
                 return jsonify({"error": "Note not found or user mismatch."}), 404
@@ -330,8 +428,13 @@ def delete_note():
         return jsonify({"error": "Database service unavailable."}), 503
 
     try:
+        set_column_mappings()
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM notes WHERE filename = %s AND emailid = %s", (filename, email))
+            del_q = sql.SQL("DELETE FROM {table} WHERE filename = %s AND {email_col} = %s").format(
+                table=sql.Identifier("notes"),
+                email_col=sql.Identifier(NOTES_EMAIL_COL)
+            )
+            cur.execute(del_q, (filename, email))
             conn.commit()
             if cur.rowcount == 0:
                 return jsonify({"error": "Note not found or permission denied."}), 404
@@ -360,9 +463,7 @@ def pin_note():
     if not email or not filename or pinned is None:
         return jsonify({"error": "Missing required fields for pin action."}), 400
     if not isinstance(pinned, bool):
-        # Allow 0/1 or "true"/"false" as fallback
         pinned = bool(pinned)
-
     if not validate_email(email):
         return jsonify({"error": "Invalid email format."}), 400
 
@@ -371,11 +472,13 @@ def pin_note():
         return jsonify({"error": "Database service unavailable."}), 503
 
     try:
+        set_column_mappings()
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE notes SET pinned = %s WHERE filename = %s AND emailid = %s",
-                (pinned, filename, email)
+            pin_q = sql.SQL("UPDATE {table} SET pinned = %s WHERE filename = %s AND {email_col} = %s").format(
+                table=sql.Identifier("notes"),
+                email_col=sql.Identifier(NOTES_EMAIL_COL)
             )
+            cur.execute(pin_q, (pinned, filename, email))
             conn.commit()
             if cur.rowcount == 0:
                 return jsonify({"error": "Note not found or user mismatch."}), 404
@@ -415,7 +518,6 @@ def drive_login():
     if not email:
         return jsonify({"error": "Email is required to initiate Google Drive login."}), 400
 
-    # Build OAuth flow and redirect user to Google consent screen.
     flow = Flow.from_client_config(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
@@ -424,14 +526,14 @@ def drive_login():
     authorization_url, state = flow.authorization_url(
         access_type='offline',
         prompt='consent',
-        state=email  # passing email in state to identify user during callback
+        state=email
     )
     return redirect(authorization_url)
 
 
 @app.route('/drive/callback')
 def drive_callback():
-    state = request.args.get('state')  # we encoded email in state
+    state = request.args.get('state')
     flow = Flow.from_client_config(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
@@ -444,18 +546,18 @@ def drive_callback():
         return jsonify({"error": "Failed to fetch token from Google."}), 500
 
     refresh_token = getattr(flow.credentials, "refresh_token", None)
-    if not refresh_token:
-        logging.warning("No refresh token received from Google. User may need to re-consent with prompt=consent.")
-        # Still try to extract access token if present, but ideally we need refresh token.
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database service unavailable."}), 503
+
     try:
+        set_column_mappings()
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET google_refresh_token = %s WHERE emailid = %s",
-                (refresh_token, state)
+            upd_q = sql.SQL("UPDATE {table} SET google_refresh_token = %s WHERE {email_col} = %s").format(
+                table=sql.Identifier("users"),
+                email_col=sql.Identifier(USERS_EMAIL_COL)
             )
+            cur.execute(upd_q, (refresh_token, state))
             conn.commit()
         return """
             <html>
@@ -481,7 +583,6 @@ def drive_callback():
 
 
 def _get_and_refresh_drive_service(refresh_token):
-    """Builds a Drive service object from a refresh token. Raises informative exceptions on failure."""
     creds = Credentials(
         None,
         refresh_token=refresh_token,
@@ -499,7 +600,6 @@ def _get_and_refresh_drive_service(refresh_token):
 
 
 def _ensure_folder(service, folder_name):
-    """Finds a folder by name or creates it if it doesn't exist. Returns folder ID."""
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
     response = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     files = response.get('files', [])
@@ -527,15 +627,22 @@ def upload_to_drive():
         return jsonify({"error": "Database service unavailable."}), 503
 
     try:
+        set_column_mappings()
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            # First, get the user's refresh token
-            cur.execute("SELECT google_refresh_token FROM users WHERE emailid = %s", (email,))
+            sel_q = sql.SQL("SELECT google_refresh_token FROM {table} WHERE {email_col} = %s").format(
+                table=sql.Identifier("users"),
+                email_col=sql.Identifier(USERS_EMAIL_COL)
+            )
+            cur.execute(sel_q, (email,))
             user = cur.fetchone()
             if not user or not user.get('google_refresh_token'):
                 return jsonify({"error": "Google Drive not connected for this user."}), 403
 
-            # Then, get the note content
-            cur.execute("SELECT title, filecontent FROM notes WHERE filename = %s AND emailid = %s", (filename, email))
+            note_q = sql.SQL("SELECT title, filecontent FROM {table} WHERE filename = %s AND {email_col} = %s").format(
+                table=sql.Identifier("notes"),
+                email_col=sql.Identifier(NOTES_EMAIL_COL)
+            )
+            cur.execute(note_q, (filename, email))
             note = cur.fetchone()
             if not note:
                 return jsonify({"error": "Note not found."}), 404
@@ -553,14 +660,8 @@ def upload_to_drive():
             'parents': [parent_folder_id],
         }
         media_body = MediaIoBaseUpload(BytesIO((note['filecontent'] or "").encode('utf-8')), mimetype='text/plain', resumable=False)
-
-        created_file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media_body,
-            fields='id'
-        ).execute()
+        created_file = drive_service.files().create(body=file_metadata, media_body=media_body, fields='id').execute()
         return jsonify({"message": "Note uploaded to Google Drive.", "file_id": created_file.get("id")}), 200
-
     except HttpError as e:
         logging.error(f"Google Drive upload error: {e}")
         return jsonify({"error": "Failed to upload to Google Drive. Connection may need to be re-established."}), 500
@@ -576,11 +677,16 @@ def upload_to_drive():
 
 # ------------------ App Initialization ------------------
 if __name__ == "__main__":
-    # Initialize DB when running directly (development convenience)
     try:
         init_db()
     except Exception:
         pass
+
+    # Re-detect mappings after init
+    try:
+        set_column_mappings()
+    except Exception as e:
+        logging.warning(f"Column mapping detection failed on startup: {e}")
 
     debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
     app.run(debug=debug_mode, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
