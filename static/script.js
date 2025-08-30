@@ -68,7 +68,8 @@
 
     // --- Constants ---
     // Use relative path for backend API (works for local and deployed)
-    const BACKEND_BASE_URL = "/"; // Use "/" for same-origin API calls
+    // FIX: If running backend locally on port 5000, use full URL
+    const BACKEND_BASE_URL = window.location.hostname === "localhost" ? "http://localhost:5000" : "/";
     const MAX_CHAR_LIMIT = 10000;
 
     // --- Utility Functions ---
@@ -88,14 +89,12 @@
     // --- Password Show/Hide Toggle ---
     function addPasswordToggle(input, container) {
         const toggle = document.createElement("span");
-        toggle.textContent = "👁";
         toggle.style.cursor = "pointer";
         toggle.style.marginLeft = "8px";
         toggle.style.userSelect = "none";
         toggle.title = "Show/Hide Password";
         toggle.onclick = () => {
             input.type = input.type === "password" ? "text" : "password";
-            toggle.textContent = input.type === "password" ? "👁" : "🙈";
         };
         container.appendChild(toggle);
     }
