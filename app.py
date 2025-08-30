@@ -8,16 +8,8 @@ from flask import Flask, request, jsonify, redirect, session
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import click
-from datetime import datetime, timezone
-
-# --- Google OAuth Imports ---
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseUpload
-from google.auth.transport.requests import Request as GoogleRequest
-from google.auth.exceptions import RefreshError
+from datetime import datetime, timezone, timedelta
+import jwt # Using PyJWT for token generation
 
 # --- Basic Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,99 +17,116 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://savetext_db_user:1YaL7yXH4rvZqCoC8K53Qy3PAaKod0Jh@dpg-d2f27didbo4c73918te0-a/savetext_db")
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True)
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-for-session")
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "super-secret-jwt-key")
+
 
 # ------------------ Database Helper ------------------
 def get_db_connection():
-    """Establishes and returns a database connection."""
+    """Establishes a connection to the PostgreSQL database."""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         return conn
-    except psycopg2.Error as e:
+    except psycopg2.OperationalError as e:
         logging.error(f"Database connection error: {e}")
         return None
 
-# ------------------ Database Initialization ------------------
-def init_db():
-    """Initializes the database schema."""
+# ------------------ Authentication Helpers ------------------
+def get_user_id_from_request(req):
+    """Extracts user ID from JWT token in Authorization header."""
+    auth_header = req.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    
+    token = auth_header.split(" ")[1]
+    try:
+        decoded_token = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+        return decoded_token.get("user_id")
+    except jwt.ExpiredSignatureError:
+        logging.warning("Token has expired.")
+        return None
+    except jwt.InvalidTokenError:
+        logging.warning("Invalid token provided.")
+        return None
+
+# ------------------ CLI Command for DB Init ------------------
+@click.command(name='init-db')
+def init_db_command():
+    """CLI command to initialize the database tables."""
     conn = get_db_connection()
     if not conn:
-        logging.error("Could not initialize database: No connection.")
+        click.echo("Failed to connect to the database.")
         return
     try:
         with conn.cursor() as cur:
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                google_creds_json TEXT
-            );
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
             """)
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                filename TEXT NOT NULL,
-                filecontent TEXT,
-                title TEXT,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-            """)
-            # Add updated_at trigger
-            cur.execute("""
-            CREATE OR REPLACE FUNCTION trigger_set_timestamp()
-            RETURNS TRIGGER AS $$
-            BEGIN
-              NEW.updated_at = NOW();
-              RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-            """)
-            cur.execute("""
-            DROP TRIGGER IF EXISTS set_timestamp ON notes;
-            CREATE TRIGGER set_timestamp
-            BEFORE UPDATE ON notes
-            FOR EACH ROW
-            EXECUTE PROCEDURE trigger_set_timestamp();
+                CREATE TABLE IF NOT EXISTS notes (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    filename TEXT NOT NULL,
+                    content TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                    UNIQUE (user_id, filename)
+                );
             """)
         conn.commit()
-        logging.info("Database initialized successfully.")
-    except psycopg2.Error as e:
-        logging.error(f"Error initializing database: {e}")
+        click.echo("Database tables initialized successfully.")
+    except Exception as e:
+        click.echo(f"An error occurred: {e}")
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
-@app.cli.command("init-db")
-def init_db_command():
-    """CLI command to initialize the database."""
-    init_db()
-    click.echo("Initialized the database.")
+app.cli.add_command(init_db_command)
 
-# ------------------ User Authentication Routes ------------------
+# ------------------ API Routes ------------------
+@app.route("/")
+def index():
+    return "API is running."
+
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
-    # FIX: Strip whitespace from email to prevent registration issues.
-    email = data.get("email", "").strip()
+    email = data.get("email")
     password = data.get("password")
 
-    if not email or not password or not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        return jsonify({"error": "Invalid email or password"}), 400
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters long"}), 400
 
     hashed_password = generate_password_hash(password)
+    
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
 
     try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (email, hashed_password))
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(
+                "INSERT INTO users (email, password) VALUES (%s, %s) RETURNING id",
+                (email, hashed_password),
+            )
+            user_id = cur.fetchone()["id"]
         conn.commit()
-        return jsonify({"message": "User registered successfully"}), 201
+        
+        # Create a token for the new user
+        token = jwt.encode(
+            {"user_id": user_id, "exp": datetime.now(timezone.utc) + timedelta(hours=24)},
+            JWT_SECRET_KEY,
+            algorithm="HS256"
+        )
+        return jsonify({"message": "User registered successfully", "token": token}), 201
     except psycopg2.IntegrityError:
         return jsonify({"error": "Email already registered"}), 409
     except Exception as e:
@@ -127,39 +136,43 @@ def register():
         if conn:
             conn.close()
 
+
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
-    email = data.get("email", "").strip()
+    email = data.get("email")
     password = data.get("password")
-    
+
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
-
+    
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT id, password FROM users WHERE email = %s", (email,))
+            cur.execute("SELECT * FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
-        
-        if user and user["password"] and check_password_hash(user["password"], password):
-            return jsonify({"token": user["id"], "message": "Login successful"}), 200
-        else:
-            return jsonify({"error": "Invalid email or password"}), 401
+            
+            # --- THIS IS THE FIX ---
+            # Correctly check the hashed password against the provided password.
+            if user and check_password_hash(user["password"], password):
+                token = jwt.encode(
+                    {"user_id": user["id"], "exp": datetime.now(timezone.utc) + timedelta(hours=24)},
+                    JWT_SECRET_KEY,
+                    algorithm="HS256"
+                )
+                return jsonify({"message": "Login successful", "token": token}), 200
+            else:
+                # This error is now returned only if the email doesn't exist or the password is truly incorrect.
+                return jsonify({"error": "Invalid email or password"}), 401
     except Exception as e:
         logging.error(f"Login error: {e}")
         return jsonify({"error": "An internal error occurred"}), 500
     finally:
         if conn:
             conn.close()
-
-# ------------------ Note Management Routes ------------------
-def get_user_id_from_request(request):
-    """Helper to extract user ID from Authorization header."""
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        return auth_header.split(" ")[1]
-    return None
 
 @app.route("/save", methods=["POST"])
 def save_text():
@@ -170,33 +183,25 @@ def save_text():
     data = request.get_json()
     filename = data.get("filename")
     content = data.get("content")
-    title = data.get("title")
 
-    if not title:
-        return jsonify({"error": "Title is required"}), 400
+    if not filename:
+        return jsonify({"error": "Filename is required"}), 400
 
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
-
+    
     try:
         with conn.cursor() as cur:
-            if filename: # Update existing note
-                cur.execute(
-                    "UPDATE notes SET filecontent = %s, title = %s WHERE filename = %s AND user_id = %s",
-                    (content, title, filename, user_id)
-                )
-                message = "Note updated successfully"
-            else: # Create new note
-                new_filename = f"note_{int(datetime.now(timezone.utc).timestamp())}_{user_id}.txt"
-                cur.execute(
-                    "INSERT INTO notes (user_id, filename, filecontent, title) VALUES (%s, %s, %s, %s)",
-                    (user_id, new_filename, content, title)
-                )
-                filename = new_filename
-                message = "Note saved successfully"
+            # Upsert logic: Insert or update on conflict
+            cur.execute("""
+                INSERT INTO notes (user_id, filename, content, updated_at)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id, filename)
+                DO UPDATE SET content = EXCLUDED.content, updated_at = CURRENT_TIMESTAMP;
+            """, (user_id, filename, content))
         conn.commit()
-        return jsonify({"message": message, "filename": filename}), 200
+        return jsonify({"message": "Note saved successfully"}), 200
     except Exception as e:
         logging.error(f"Save note error: {e}")
         return jsonify({"error": "Failed to save note"}), 500
@@ -209,19 +214,16 @@ def get_history():
     user_id = get_user_id_from_request(request)
     if not user_id:
         return jsonify({"error": "Authorization required"}), 401
-    
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
-    
+        
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute(
-                "SELECT filename, filecontent, title, updated_at FROM notes WHERE user_id = %s ORDER BY updated_at DESC",
-                (user_id,)
-            )
-            notes = [dict(row) for row in cur.fetchall()]
-        return jsonify(notes), 200
+            cur.execute("SELECT filename, content, updated_at FROM notes WHERE user_id = %s ORDER BY updated_at DESC", (user_id,))
+            history = [dict(row) for row in cur.fetchall()]
+        return jsonify(history), 200
     except Exception as e:
         logging.error(f"Get history error: {e}")
         return jsonify({"error": "Failed to retrieve history"}), 500
@@ -257,10 +259,6 @@ def delete_text():
         if conn:
             conn.close()
 
-# ------------------ App Initialization ------------------
-if __name__ == "__main__":
-    with app.app_context():
-        init_db()
-    port = int(os.environ.get("PORT", 5001))
-    app.run(debug=True, host='0.0.0.0', port=port)
-
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=True)
