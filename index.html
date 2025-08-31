@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TextGrab</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✂️</text></svg>">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✂️</text></svg>">
     <link rel="stylesheet" href="static/style.css" />
 </head>
+
 <body>
     <div id="loader" class="loader-overlay" style="display: none;">
         <div class="loader"></div>
@@ -27,7 +30,8 @@
             <h2>Login</h2>
             <form id="loginForm" novalidate>
                 <input type="email" id="loginEmail" placeholder="Email" autocomplete="username" required />
-                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required />
+                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password"
+                    required />
                 <button type="submit">Login</button>
             </form>
             <div id="loginMsg" class="message" role="status"></div>
@@ -39,7 +43,8 @@
             <h2>Register</h2>
             <form id="registerForm" novalidate>
                 <input type="email" id="registerEmail" placeholder="Email" autocomplete="username" required />
-                <input type="password" id="registerPassword" placeholder="Password" autocomplete="new-password" required />
+                <input type="password" id="registerPassword" placeholder="Password" autocomplete="new-password"
+                    required />
                 <button type="submit">Register</button>
             </form>
             <div id="registerMsg" class="message" role="status"></div>
@@ -54,7 +59,8 @@
                 <textarea id="textInput" placeholder="Enter your text here..."></textarea>
                 <div class="btn-row">
                     <button type="submit" id="saveBtn">Save</button>
-                    <button type="button" id="cancelEditBtn" class="btn-secondary" style="display: none;">Cancel Edit</button>
+                    <button type="button" id="cancelEditBtn" class="btn-secondary" style="display: none;">Cancel
+                        Edit</button>
                     <button type="button" id="historyBtn" class="btn-secondary">View History</button>
                 </div>
             </form>
@@ -70,7 +76,8 @@
                     <input type="checkbox" id="selectAllNotes" />
                     <label for="selectAllNotes">Select All Visible</label>
                 </div>
-                <button id="deleteSelectedBtn" class="btn-small btn-danger" style="display: none;">Delete Selected</button>
+                <button id="deleteSelectedBtn" class="btn-small btn-danger" style="display: none;">Delete
+                    Selected</button>
             </div>
             <div id="historyStatus" class="message" role="status"></div>
             <div id="historyList"></div>
@@ -93,4 +100,5 @@
 
     <script src="static/script.js"></script>
 </body>
+
 </html>
