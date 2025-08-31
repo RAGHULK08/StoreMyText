@@ -2,8 +2,8 @@
     "use strict";
 
     // --- Configuration & State ---
-    const API_BASE_URL = "https://savetext-0pk6.onrender.com";
-"; 
+    // Use current origin by default so it works with local Flask server (no need to change when testing)
+    const API_BASE_URL = window.location.origin;
     const state = {
         token: localStorage.getItem("token"),
         currentView: "",
@@ -76,7 +76,22 @@
         try {
             UI.displays.loader.style.display = "flex";
             const resp = await fetch(`${API_BASE_URL}${endpoint}`, config);
-            const data = await resp.json();
+
+            // Try to parse JSON if content-type is application/json
+            const ct = resp.headers.get("Content-Type") || "";
+            let data;
+            if (ct.includes("application/json")) {
+                data = await resp.json();
+            } else {
+                // fallback to text for better error messages on non-json responses
+                const text = await resp.text();
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    data = { error: text || `HTTP ${resp.status}` };
+                }
+            }
+
             if (!resp.ok) {
                 throw new Error(data.error || `HTTP ${resp.status}`);
             }
@@ -91,7 +106,9 @@
 
     // --- UI helpers ---
     function showView(viewName) {
-        Object.values(UI.views).forEach(v => v.style.display = "none");
+        Object.values(UI.views).forEach(v => {
+            if (v) v.style.display = "none";
+        });
         if (UI.views[viewName]) {
             UI.views[viewName].style.display = "block";
             state.currentView = viewName;
@@ -129,6 +146,10 @@
         e.preventDefault();
         const email = UI.inputs.loginEmail.value.trim();
         const password = UI.inputs.loginPassword.value;
+        if (!email || !password) {
+            showStatusMessage(UI.messages.loginStatus, "Please enter email and password", "error");
+            return;
+        }
         try {
             const data = await apiRequest("/login", "POST", { email, password });
             state.token = data.token;
@@ -145,6 +166,10 @@
         e.preventDefault();
         const email = UI.inputs.registerEmail.value.trim();
         const password = UI.inputs.registerPassword.value;
+        if (!email || !password) {
+            showStatusMessage(UI.messages.registerStatus, "Please enter email and password", "error");
+            return;
+        }
         try {
             const data = await apiRequest("/register", "POST", { email, password });
             // auto-login token returned
@@ -153,6 +178,7 @@
                 localStorage.setItem("token", state.token);
                 await loadUserProfile();
                 initializeApp();
+                showStatusMessage(UI.messages.registerStatus, "Registered and logged in", "success");
             } else {
                 showStatusMessage(UI.messages.registerStatus, "Registered. Please log in.", "success");
                 showView("login");
@@ -192,16 +218,7 @@
         try {
             const r = await apiRequest("/auth/google/start");
             if (r && r.auth_url) {
-                // Navigate browser to the auth url. Google will redirect back to server callback which will
-                // redirect to FRONTEND_URL with google_link_success=1 or google_link_error=1.
-                // The server requires the Authorization header on the callback to associate creds with the user.
-                // Browsers don't send Authorization header on 3rd-party redirect, so we do the redirect via fetch:
-                // First open a small POST to callback URL with Authorization so that server has the token in request headers.
-                // But since the callback is done by Google we cannot attach header there. Therefore the recommended approach:
-                // 1. Open the auth_url in the browser (user consents)
-                // 2. After redirect completes, the server will still not have the Authorization header.
-                // To ensure linking, after redirect success the frontend should call a small endpoint to fetch fresh /me (server saved creds if it had the user info).
-                // Simpler approach: open auth_url in a new tab/window.
+                // Open in same window for simpler flows
                 window.location.href = r.auth_url;
             } else {
                 showStatusMessage(UI.messages.mainStatus, "Could not start Google auth", "error");
@@ -211,13 +228,12 @@
         }
     }
 
-    // Check URL for google_link_success/google_link_error params (after redirect flow)
+    // Check URL for oauth redirect flags
     function checkOAuthRedirectFlags() {
         const params = new URLSearchParams(window.location.search);
         if (params.get("google_link_success")) {
-            // user probably linked; re-fetch profile
             const current = window.location.href.split("?")[0];
-            history.replaceState({}, "", current); // remove query params
+            history.replaceState({}, "", current);
             loadUserProfile().then(() => {
                 showStatusMessage(UI.messages.mainStatus, "Google Drive linked successfully!", "success");
                 UI.buttons.connectDrive.style.display = "none";
@@ -230,7 +246,7 @@
     }
 
     // --- Notes ---
-    function handleSaveNote(e) {
+    async function handleSaveNote(e) {
         e.preventDefault();
         const title = UI.inputs.noteTitle.value.trim();
         if (!title) {
@@ -264,9 +280,10 @@
     }
 
     function renderHistory(filter = "") {
+        filter = filter || "";
         const filtered = state.notesCache.filter(note =>
-            note.title.toLowerCase().includes(filter) ||
-            (note.filecontent || "").toLowerCase().includes(filter)
+            (note.title || "").toLowerCase().includes(filter) ||
+            ((note.filecontent || "").toLowerCase().includes(filter))
         );
         if (!filtered.length) {
             UI.displays.historyList.innerHTML = "<p>No notes found.</p>";
@@ -389,4 +406,3 @@
         initializeApp();
     });
 })();
-
