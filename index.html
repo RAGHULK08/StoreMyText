@@ -1,25 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Store My Text</title>
-    <!-- Use a generic favicon for broader compatibility -->
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📝</text></svg>">
+    <title>TextGrab</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✂️</text></svg>">
     <link rel="stylesheet" href="static/style.css" />
 </head>
-
 <body>
     <div id="loader" class="loader-overlay" style="display: none;">
         <div class="loader"></div>
     </div>
 
     <header>
-        <h1>Store My Text</h1>
+        <h1>TextGrab</h1>
         <div class="header-actions">
             <span id="userEmail" class="user-email"></span>
+            <button id="connectDriveBtn" class="btn-small" style="display:none;">Connect Drive</button>
             <button id="logoutBtn" class="btn-small" style="display:none;">Logout</button>
         </div>
     </header>
@@ -30,14 +27,13 @@
             <h2>Login</h2>
             <form id="loginForm" novalidate>
                 <input type="email" id="loginEmail" placeholder="Email" autocomplete="username" required />
-                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password"
-                    required />
+                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required />
                 <button type="submit">Login</button>
             </form>
             <div id="loginMsg" class="message" role="status"></div>
             <p class="form-switcher">Don't have an account? <a href="#" id="goToRegister">Register</a></p>
         </section>
-        
+
         <!-- Registration View -->
         <section id="registerSection" class="view card" style="display: none;">
             <h2>Register</h2>
@@ -69,8 +65,6 @@
         <section id="historySection" class="view view--scrollable card" style="display: none;">
             <h2>Your Saved Notes</h2>
             <input type="search" id="searchNotes" placeholder="Search by title or content..." />
-
-            <!-- Bulk Actions Bar -->
             <div id="bulkActions" class="bulk-actions">
                 <div class="select-all-container">
                     <input type="checkbox" id="selectAllNotes" />
@@ -78,7 +72,6 @@
                 </div>
                 <button id="deleteSelectedBtn" class="btn-small btn-danger" style="display: none;">Delete Selected</button>
             </div>
-
             <div id="historyStatus" class="message" role="status"></div>
             <div id="historyList"></div>
             <div class="btn-row">
@@ -100,5 +93,4 @@
 
     <script src="static/script.js"></script>
 </body>
-
 </html>
