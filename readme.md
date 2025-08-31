@@ -1,4 +1,4 @@
-# **Store My Text**
+# **TextGrab**
 
 Store My Text is a secure web application designed to help you quickly save, manage, and access your text notes from anywhere. With a clean interface and robust backend, it ensures your notes are always safe and available. A key feature is its integration with Google Drive, allowing you to save your notes directly to your personal cloud storage.
 
