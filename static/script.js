@@ -2,7 +2,8 @@
     "use strict";
 
     // --- Configuration & State ---
-    const API_BASE_URL = "https://your-backend.example.com"; // << REPLACE this with your backend URL (render app)
+    const API_BASE_URL = "https://savetext-0pk6.onrender.com";
+"; 
     const state = {
         token: localStorage.getItem("token"),
         currentView: "",
@@ -388,3 +389,4 @@
         initializeApp();
     });
 })();
+
