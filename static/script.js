@@ -2,8 +2,7 @@
     "use strict";
 
     // --- Configuration & State ---
-    // Use current origin by default so it works with local Flask server (no need to change when testing)
-    const API_BASE_URL = window.location.origin;
+    const API_BASE_URL = "https://savetext-0pk6.onrender.com";
     const state = {
         token: localStorage.getItem("token"),
         currentView: "",
@@ -406,3 +405,4 @@
         initializeApp();
     });
 })();
+
