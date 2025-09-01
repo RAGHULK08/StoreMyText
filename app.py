@@ -1,246 +1,131 @@
+# app.py
 import os
 import re
 import json
+import hmac
+import time
+import base64
+import hashlib
 import logging
-import sqlite3
 import psycopg2
 from io import BytesIO
-from datetime import datetime, timezone, timedelta
-
 from psycopg2.extras import DictCursor
-from flask import Flask, request, jsonify, redirect, session, url_for, send_from_directory
+from flask import Flask, request, jsonify, redirect, session, url_for
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import click
+from datetime import datetime, timezone, timedelta
 import jwt
 
-# Google OAuth libs (only used if configured)
-try:
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import Flow
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaIoBaseUpload
-    from google.auth.transport.requests import Request as GoogleRequest
-    from google.auth.exceptions import RefreshError
-except Exception:
-    # If Google libs aren't installed, OAuth features will return helpful error messages.
-    Credentials = None
-    Flow = None
-    build = None
-    MediaIoBaseUpload = None
-    GoogleRequest = None
-    RefreshError = None
+# Google OAuth
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from google.auth.transport.requests import Request as GoogleRequest
+from google.auth.exceptions import RefreshError
 
-# --- Logging ---
+# ---- logging ----
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Config (use env vars in production) ---
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./app.db")  # default to local sqlite for easy dev
-FRONTEND_URL = os.environ.get("FRONTEND_URL")
+# ---- env / config ----
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+BACKEND_URL = os.environ.get("BACKEND_URL", "") 
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "") 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key")
+FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
 JWT_SECRET = os.environ.get("JWT_SECRET", FLASK_SECRET_KEY)
 JWT_ALGO = "HS256"
 JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
 
-# DB type helper
-DB_TYPE = "sqlite" if DATABASE_URL.startswith("sqlite://") else "postgres"
+if not BACKEND_URL:
+    logging.warning("BACKEND_URL not set — OAuth redirect URI may be wrong. Set BACKEND_URL to your backend base URL (https://...)")
 
-app = Flask(__name__, static_folder="static", static_url_path="/static")
+app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
-CORS(app, supports_credentials=True)
 
+# Limit CORS to your frontend to avoid browser blocks - set FRONTEND_URL in env
+if FRONTEND_URL:
+    CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}, supports_credentials=True)
+else:
+    CORS(app, supports_credentials=True)
 
-# -------------- DB helpers -----------------
+# ---------------- DB helpers ----------------
 def get_db_connection():
-    """
-    Returns a DB connection object. For SQLite returns sqlite3.Connection.
-    For Postgres returns psycopg2 connection.
-    """
     try:
-        if DB_TYPE == "sqlite":
-            # parse path after sqlite:///
-            path = DATABASE_URL.split("sqlite://", 1)[1]
-            # path may be like:///./app.db or :memory:
-            # ensure correct prefix removal
-            if path.startswith(":///"):
-                path = path[3:]
-            conn = sqlite3.connect(path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            return conn
-        else:
-            conn = psycopg2.connect(DATABASE_URL)
-            return conn
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
     except Exception as e:
-        logging.error(f"DB connection failed ({DB_TYPE}): {e}")
+        logging.error(f"DB connection failed (postgres): {e}")
         return None
 
-
-def adapt_query_for_db(query):
-    """
-    Convert psycopg2-style %s placeholders into sqlite3's ? when needed.
-    """
-    if DB_TYPE == "sqlite":
-        return query.replace("%s", "?")
-    return query
-
-
-def fetch_one(conn, query, params=()):
-    q = adapt_query_for_db(query)
-    if DB_TYPE == "sqlite":
-        cur = conn.cursor()
-        cur.execute(q, params or [])
-        row = cur.fetchone()
-        return dict(row) if row else None
-    else:
-        with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute(q, params or ())
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-
-def fetch_all(conn, query, params=()):
-    q = adapt_query_for_db(query)
-    if DB_TYPE == "sqlite":
-        cur = conn.cursor()
-        cur.execute(q, params or [])
-        rows = cur.fetchall()
-        return [dict(r) for r in rows]
-    else:
-        with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute(q, params or ())
-            rows = cur.fetchall()
-            return [dict(r) for r in rows]
-
-
-def execute(conn, query, params=(), commit=False):
-    q = adapt_query_for_db(query)
-    if DB_TYPE == "sqlite":
-        cur = conn.cursor()
-        cur.execute(q, params or [])
-        if commit:
-            conn.commit()
-        return cur
-    else:
-        cur = conn.cursor()
-        cur.execute(q, params or ())
-        if commit:
-            conn.commit()
-        return cur
-
-
-# ---------------- DB initialization ----------------
 def init_db():
     conn = get_db_connection()
     if not conn:
         logging.error("Cannot initialize DB: no connection")
         return
-
     try:
-        if DB_TYPE == "sqlite":
-            cur = conn.cursor()
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    google_creds_json TEXT
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS notes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    filename TEXT NOT NULL,
-                    filecontent TEXT,
-                    title TEXT,
-                    drive_file_id TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-                );
-                """
-            )
-            conn.commit()
-            logging.info("SQLite DB initialized.")
-        else:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS users (
-                        id SERIAL PRIMARY KEY,
-                        email TEXT UNIQUE NOT NULL,
-                        password_hash TEXT NOT NULL,
-                        google_creds_json TEXT
-                    );
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS notes (
-                        id SERIAL PRIMARY KEY,
-                        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                        filename TEXT NOT NULL,
-                        filecontent TEXT,
-                        title TEXT,
-                        drive_file_id TEXT,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    );
-                    """
-                )
-                # Trigger to update timestamp for Postgres
-                cur.execute(
-                    """
-                    CREATE OR REPLACE FUNCTION trigger_set_timestamp()
-                    RETURNS TRIGGER AS $$
-                    BEGIN
-                      NEW.updated_at = NOW();
-                      RETURN NEW;
-                    END;
-                    $$ LANGUAGE plpgsql;
-                    """
-                )
-                cur.execute("DROP TRIGGER IF EXISTS set_timestamp ON notes;")
-                cur.execute(
-                    """
-                    CREATE TRIGGER set_timestamp
-                    BEFORE UPDATE ON notes
-                    FOR EACH ROW
-                    EXECUTE PROCEDURE trigger_set_timestamp();
-                    """
-                )
-            conn.commit()
-            logging.info("Postgres DB initialized.")
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                google_creds_json TEXT
+            );
+            """)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS notes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                filecontent TEXT,
+                title TEXT,
+                drive_file_id TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            cur.execute("""
+            CREATE OR REPLACE FUNCTION trigger_set_timestamp()
+            RETURNS TRIGGER AS $$
+            BEGIN
+              NEW.updated_at = NOW();
+              RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+            cur.execute("""
+            DROP TRIGGER IF EXISTS set_timestamp ON notes;
+            CREATE TRIGGER set_timestamp
+            BEFORE UPDATE ON notes
+            FOR EACH ROW
+            EXECUTE PROCEDURE trigger_set_timestamp();
+            """)
+        conn.commit()
+        logging.info("DB initialized / migrations applied")
     except Exception as e:
-        logging.error(f"Error initializing DB: {e}")
+        logging.error(f"Error init DB: {e}")
     finally:
         conn.close()
 
-
-# CLI command
 @app.cli.command("init-db")
 def init_db_command():
     init_db()
     click.echo("Initialized DB.")
-
 
 # ---------------- JWT helpers ----------------
 def create_token(user_id):
     payload = {
         "sub": str(user_id),
         "iat": datetime.utcnow(),
-        "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS),
+        "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
     if isinstance(token, bytes):
         token = token.decode()
     return token
-
 
 def decode_token(token):
     try:
@@ -252,7 +137,6 @@ def decode_token(token):
         logging.warning(f"JWT decode error: {e}")
         return None
 
-
 def get_user_id_from_request(req):
     auth = req.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
@@ -260,6 +144,34 @@ def get_user_id_from_request(req):
         return decode_token(token)
     return None
 
+# ---------------- secure state helpers ----------------
+# We will encode user_id + timestamp + HMAC signature into state so callback can identify user
+def make_oauth_state(user_id):
+    ts = str(int(time.time()))
+    msg = f"{user_id}:{ts}".encode()
+    sig = hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+    raw = f"{user_id}:{ts}:{sig}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+def verify_oauth_state(state_b64, max_age_seconds=600):
+    try:
+        raw = base64.urlsafe_b64decode(state_b64.encode()).decode()
+        parts = raw.split(":")
+        if len(parts) != 3:
+            return None
+        user_id, ts, sig = parts
+        msg = f"{user_id}:{ts}".encode()
+        expected = hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, sig):
+            logging.warning("OAuth state signature mismatch")
+            return None
+        if abs(int(time.time()) - int(ts)) > max_age_seconds:
+            logging.warning("OAuth state expired")
+            return None
+        return user_id
+    except Exception as e:
+        logging.warning(f"OAuth state verify error: {e}")
+        return None
 
 # ---------------- Google Drive helpers ----------------
 def build_client_config():
@@ -272,9 +184,8 @@ def build_client_config():
         }
     }
 
-
 def get_drive_service_from_creds_json(creds_json):
-    if not creds_json or Credentials is None:
+    if not creds_json:
         return None, None
     try:
         creds_info = json.loads(creds_json)
@@ -298,19 +209,15 @@ def get_drive_service_from_creds_json(creds_json):
         logging.error(f"Error building drive service from creds: {e}")
         return None, None
 
-
 def creds_to_json(creds):
-    return json.dumps(
-        {
-            "token": creds.token,
-            "refresh_token": getattr(creds, "refresh_token", None),
-            "token_uri": creds.token_uri,
-            "client_id": creds.client_id,
-            "client_secret": creds.client_secret,
-            "scopes": creds.scopes,
-        }
-    )
-
+    return json.dumps({
+        "token": creds.token,
+        "refresh_token": getattr(creds, "refresh_token", None),
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": creds.scopes
+    })
 
 def upload_or_update_file(service, file_name, content, existing_file_id=None):
     try:
@@ -327,7 +234,6 @@ def upload_or_update_file(service, file_name, content, existing_file_id=None):
         logging.error(f"Drive upload/update failed: {e}")
         return None
 
-
 def delete_drive_file(service, file_id):
     try:
         service.files().delete(fileId=file_id).execute()
@@ -335,7 +241,6 @@ def delete_drive_file(service, file_id):
     except Exception as e:
         logging.warning(f"Drive delete failed (file may already be gone): {e}")
         return False
-
 
 # ---------------- Auth routes ----------------
 @app.route("/register", methods=["POST"])
@@ -345,33 +250,24 @@ def register():
     password = (data.get("password") or "").strip()
     if not email or not password or not re.match(r"[^@]+@[^@]+\.[^@]+", email):
         return jsonify({"error": "Invalid email or password"}), 400
-
     hashed = generate_password_hash(password)
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
     try:
-        if DB_TYPE == "sqlite":
-            cur = execute(conn, "INSERT INTO users (email, password_hash) VALUES (%s, %s);", (email, hashed), commit=True)
-            new_id = cur.lastrowid
-        else:
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id", (email, hashed))
-                new_id = cur.fetchone()[0]
-                conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id", (email, hashed))
+            new_id = cur.fetchone()[0]
+        conn.commit()
         token = create_token(new_id)
         return jsonify({"message": "User created", "token": token}), 201
+    except psycopg2.IntegrityError:
+        return jsonify({"error": "Email already registered"}), 409
     except Exception as e:
-        # detect integrity error for duplicate email
-        if (DB_TYPE == "sqlite" and isinstance(e, sqlite3.IntegrityError)) or (
-            DB_TYPE == "postgres" and isinstance(e, psycopg2.IntegrityError)
-        ):
-            return jsonify({"error": "Email already registered"}), 409
         logging.error(f"Register error: {e}")
         return jsonify({"error": "Internal error"}), 500
     finally:
         conn.close()
-
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -382,8 +278,10 @@ def login():
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
     try:
-        user = fetch_one(conn, "SELECT id, password_hash FROM users WHERE email = %s", (email,))
-        if user and user.get("password_hash") and check_password_hash(user["password_hash"], password):
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+        if user and user["password_hash"] and check_password_hash(user["password_hash"], password):
             token = create_token(user["id"])
             return jsonify({"token": token, "message": "Login successful"}), 200
         return jsonify({"error": "Invalid credentials"}), 401
@@ -392,7 +290,6 @@ def login():
         return jsonify({"error": "Internal error"}), 500
     finally:
         conn.close()
-
 
 @app.route("/me", methods=["GET"])
 def me():
@@ -403,92 +300,104 @@ def me():
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
     try:
-        row = fetch_one(conn, "SELECT id, email, google_creds_json IS NOT NULL AS drive_linked FROM users WHERE id = %s", (user_id,))
-        if not row:
-            return jsonify({"error": "User not found"}), 404
-        # For sqlite, booleans come as 0/1 so coerce to bool
-        drive_linked = bool(row.get("drive_linked"))
-        return jsonify({"id": row["id"], "email": row["email"], "drive_linked": drive_linked}), 200
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT id, email, google_creds_json IS NOT NULL AS drive_linked FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+            return jsonify({"id": row["id"], "email": row["email"], "drive_linked": row["drive_linked"]}), 200
     except Exception as e:
         logging.error(f"/me error: {e}")
         return jsonify({"error": "Internal error"}), 500
     finally:
         conn.close()
 
-
-# ------------------ Google OAuth endpoints ------------------
+# ---------------- Google OAuth endpoints ----------------
 @app.route("/auth/google/start", methods=["GET"])
 def google_auth_start():
-    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or Flow is None:
+    """
+    Start Google OAuth flow. Requires logged-in user.
+    Returns an authorization URL to which the frontend should redirect.
+    """
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         return jsonify({"error": "Google OAuth not configured on server"}), 500
+
+    user_id = get_user_id_from_request(request)
+    if not user_id:
+        return jsonify({"error": "Authorization required (login first)"}), 401
+
+    # Create a secure state that encodes user_id + timestamp and HMAC
+    state = make_oauth_state(user_id)
+
+    # Redirect URI must match exactly what's registered in Google Console
+    redirect_uri = BACKEND_URL.rstrip("/") + "/auth/google/callback"
 
     flow = Flow.from_client_config(
         build_client_config(),
         scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
-        redirect_uri=url_for("google_auth_callback", _external=True),
+        redirect_uri=redirect_uri
     )
-    auth_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent")
-    session["google_oauth_state"] = state
-    return jsonify({"auth_url": auth_url})
 
+    auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true",
+                                        prompt="consent", state=state)
+    return jsonify({"auth_url": auth_url})
 
 @app.route("/auth/google/callback", methods=["GET"])
 def google_auth_callback():
-    state = session.get("google_oauth_state")
+    """
+    Google redirects back here. We verify 'state' to find user_id, then exchange code for tokens.
+    After saving, redirect back to FRONTEND_URL with success or error.
+    """
+    # state comes from Google query param
+    state = request.args.get("state")
     if not state:
-        logging.warning("OAuth callback without state in session.")
-    if Flow is None:
-        logging.error("Google OAuth libs not installed")
-        frontend = FRONTEND_URL or (request.host_url.rstrip("/"))
-        return redirect(f"{frontend}?google_link_error=1")
+        logging.warning("OAuth callback missing state")
+        return redirect(FRONTEND_URL + "?google_link_error=1")
 
+    user_id = verify_oauth_state(state)
+    if not user_id:
+        logging.warning("OAuth callback state invalid or expired")
+        return redirect(FRONTEND_URL + "?google_link_error=1")
+
+    # Build Flow with same redirect_uri
+    redirect_uri = BACKEND_URL.rstrip("/") + "/auth/google/callback"
     flow = Flow.from_client_config(
         build_client_config(),
         scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
-        state=state,
-        redirect_uri=url_for("google_auth_callback", _external=True),
+        redirect_uri=redirect_uri,
+        state=state
     )
-    authorization_response = request.url
+
     try:
-        flow.fetch_token(authorization_response=authorization_response)
+        flow.fetch_token(authorization_response=request.url)
     except Exception as e:
         logging.error(f"Error fetching token from Google: {e}")
-        frontend = FRONTEND_URL or (request.host_url.rstrip("/"))
-        return redirect(f"{frontend}?google_link_error=1")
+        return redirect(FRONTEND_URL + "?google_link_error=1")
 
     creds = flow.credentials
-    bearer = request.headers.get("Authorization", "")
-    user_id = None
-    if bearer.startswith("Bearer "):
-        token = bearer.split(" ", 1)[1]
-        user_id = decode_token(token)
+    # Save creds JSON to the user row
+    conn = get_db_connection()
+    if not conn:
+        logging.error("DB connection failed while saving google creds")
+        return redirect(FRONTEND_URL + "?google_link_error=1")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(creds), user_id))
+        conn.commit()
+        logging.info(f"Saved Google creds for user {user_id}")
+        return redirect(FRONTEND_URL + "?google_link_success=1")
+    except Exception as e:
+        logging.error(f"Saving google creds error: {e}")
+        return redirect(FRONTEND_URL + "?google_link_error=1")
+    finally:
+        conn.close()
 
-    frontend = FRONTEND_URL or (request.host_url.rstrip("/"))
-    if user_id:
-        try:
-            conn = get_db_connection()
-            if conn:
-                execute(conn, "UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(creds), user_id), commit=True)
-                conn.close()
-                logging.info(f"Saved Google creds for user {user_id}")
-                return redirect(f"{frontend}?google_link_success=1")
-            else:
-                logging.error("DB connection failed while saving google creds")
-                return redirect(f"{frontend}?google_link_error=1")
-        except Exception as e:
-            logging.error(f"Saving google creds error: {e}")
-            return redirect(f"{frontend}?google_link_error=1")
-    else:
-        return redirect(f"{frontend}?google_link_success=1")
-
-
-# ------------------ Notes endpoints ------------------
+# ---------------- Notes endpoints (save/history/delete) ----------------
 @app.route("/save", methods=["POST"])
 def save_text():
     user_id = get_user_id_from_request(request)
     if not user_id:
         return jsonify({"error": "Authorization required"}), 401
-
     data = request.get_json() or {}
     filename = data.get("filename")
     content = data.get("content", "")
@@ -501,63 +410,51 @@ def save_text():
         return jsonify({"error": "Database connection failed"}), 500
 
     try:
-        # fetch user's creds
-        row = fetch_one(conn, "SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
-        creds_json = row["google_creds_json"] if row else None
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+            creds_json = row["google_creds_json"] if row else None
+            drive_file_id = None
 
-        drive_file_id = None
-        if filename:
-            # existing file -> update
-            r = fetch_one(conn, "SELECT drive_file_id FROM notes WHERE filename = %s AND user_id = %s", (filename, user_id))
-            existing_drive_id = r["drive_file_id"] if r else None
+            if filename:
+                cur.execute("SELECT drive_file_id FROM notes WHERE filename = %s AND user_id = %s", (filename, user_id))
+                r = cur.fetchone()
+                existing_drive_id = r["drive_file_id"] if r else None
 
-            if creds_json:
-                service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
-                if service:
-                    drive_file_id = upload_or_update_file(service, filename, content, existing_file_id=existing_drive_id)
-                    if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                        execute(conn, "UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id), commit=True)
+                if creds_json:
+                    service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
+                    if service:
+                        drive_file_id = upload_or_update_file(service, filename, content, existing_file_id=existing_drive_id)
+                        if refreshed_creds and refreshed_creds.refresh_token:
+                            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
 
-            # include explicit updated_at to work across DBs
-            execute(
-                conn,
-                """
-                UPDATE notes
-                SET filecontent = %s, title = %s, drive_file_id = COALESCE(%s, drive_file_id), updated_at = CURRENT_TIMESTAMP
-                WHERE filename = %s AND user_id = %s
-                """,
-                (content, title, drive_file_id, filename, user_id),
-                commit=True,
-            )
-            message = "Note updated"
-        else:
-            # new note
-            filename = f"note_{int(datetime.now(timezone.utc).timestamp())}_{user_id}.txt"
-            if creds_json:
-                service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
-                if service:
-                    drive_file_id = upload_or_update_file(service, filename, content)
-                    if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                        execute(conn, "UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id), commit=True)
+                cur.execute("""
+                    UPDATE notes
+                    SET filecontent = %s, title = %s, drive_file_id = COALESCE(%s, drive_file_id)
+                    WHERE filename = %s AND user_id = %s
+                """, (content, title, drive_file_id, filename, user_id))
+                message = "Note updated"
+            else:
+                filename = f"note_{int(datetime.now(timezone.utc).timestamp())}_{user_id}.txt"
+                if creds_json:
+                    service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
+                    if service:
+                        drive_file_id = upload_or_update_file(service, filename, content)
+                        if refreshed_creds and refreshed_creds.refresh_token:
+                            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
+                cur.execute("""
+                    INSERT INTO notes (user_id, filename, filecontent, title, drive_file_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (user_id, filename, content, title, drive_file_id))
+                message = "Note saved"
 
-            execute(
-                conn,
-                """
-                INSERT INTO notes (user_id, filename, filecontent, title, drive_file_id)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (user_id, filename, content, title, drive_file_id),
-                commit=True,
-            )
-            message = "Note saved"
-
+        conn.commit()
         return jsonify({"message": message, "filename": filename, "drive_file_id": drive_file_id}), 200
     except Exception as e:
         logging.error(f"Save note error: {e}")
         return jsonify({"error": "Failed to save note"}), 500
     finally:
         conn.close()
-
 
 @app.route("/history", methods=["GET"])
 def get_history():
@@ -568,17 +465,18 @@ def get_history():
     if not conn:
         return jsonify({"error": "Database connection failed"}), 500
     try:
-        notes = fetch_all(conn, """
-            SELECT filename, filecontent, title, drive_file_id, updated_at
-            FROM notes WHERE user_id = %s ORDER BY updated_at DESC
-        """, (user_id,))
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("""
+                SELECT filename, filecontent, title, drive_file_id, updated_at
+                FROM notes WHERE user_id = %s ORDER BY updated_at DESC
+            """, (user_id,))
+            notes = [dict(r) for r in cur.fetchall()]
         return jsonify(notes), 200
     except Exception as e:
         logging.error(f"Get history error: {e}")
         return jsonify({"error": "Failed to retrieve history"}), 500
     finally:
         conn.close()
-
 
 @app.route("/delete", methods=["POST"])
 def delete_notes():
@@ -595,36 +493,24 @@ def delete_notes():
         return jsonify({"error": "Database connection failed"}), 500
 
     try:
-        items = fetch_all(conn, "SELECT filename, drive_file_id FROM notes WHERE user_id = %s AND filename = ANY(%s)" if DB_TYPE == "postgres" else "SELECT filename, drive_file_id FROM notes WHERE user_id = %s AND filename IN (%s)" , (user_id, filenames) if DB_TYPE == "postgres" else (user_id, ", ".join("?" for _ in filenames)))
-        # The above fetch_all branch handles Postgres list param vs sqlite IN (...)
-        # For simplicity for SQLite, we will run a separate query to get items:
-        if DB_TYPE == "sqlite":
-            placeholders = ",".join("?" for _ in filenames)
-            items = fetch_all(conn, f"SELECT filename, drive_file_id FROM notes WHERE user_id = ? AND filename IN ({placeholders})", [user_id, *filenames])
-
-        # fetch user's creds
-        row = fetch_one(conn, "SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
-        creds_json = row["google_creds_json"] if row else None
-        service = None
-        if creds_json:
-            service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
-            if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                execute(conn, "UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id), commit=True)
-
-        deleted_count = 0
-        for it in items:
-            if it.get("drive_file_id") and service:
-                if delete_drive_file(service, it["drive_file_id"]):
-                    deleted_count += 1
-
-        # delete metadata rows
-        if DB_TYPE == "postgres":
-            # Postgres ANY works with arrays; use param
-            execute(conn, "DELETE FROM notes WHERE user_id = %s AND filename = ANY(%s)", (user_id, filenames), commit=True)
-        else:
-            placeholders = ",".join("?" for _ in filenames)
-            execute(conn, f"DELETE FROM notes WHERE user_id = ? AND filename IN ({placeholders})", [user_id, *filenames], commit=True)
-
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT filename, drive_file_id FROM notes WHERE user_id = %s AND filename = ANY(%s)", (user_id, filenames))
+            items = cur.fetchall()
+            cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+            creds_json = row["google_creds_json"] if row else None
+            service = None
+            if creds_json:
+                service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
+                if refreshed_creds and refreshed_creds.refresh_token:
+                    cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
+            deleted_count = 0
+            for it in items:
+                if it["drive_file_id"] and service:
+                    if delete_drive_file(service, it["drive_file_id"]):
+                        deleted_count += 1
+            cur.execute("DELETE FROM notes WHERE user_id = %s AND filename = ANY(%s)", (user_id, filenames))
+        conn.commit()
         return jsonify({"message": f"{len(filenames)} note(s) deleted; {deleted_count} Drive file(s) removed."}), 200
     except Exception as e:
         logging.error(f"Delete notes error: {e}")
@@ -632,21 +518,9 @@ def delete_notes():
     finally:
         conn.close()
 
-
-# ---------------- Serve frontend ----------------
-@app.route("/", methods=["GET"])
-def index():
-    # serve the index.html located in project root if present
-    root_index = os.path.join(os.getcwd(), "index.html")
-    if os.path.exists(root_index):
-        return send_from_directory(os.getcwd(), "index.html")
-    return "Place index.html in project root to serve the frontend.", 200
-
-
-# ---------------- Run ----------------
+# ---------------- Run server ----------------
 if __name__ == "__main__":
     with app.app_context():
         init_db()
     port = int(os.environ.get("PORT", 5001))
-    app.run(host="0.0.0.0", port=port, debug=True)
-
+    app.run(host="0.0.0.0", port=port, debug=False)
