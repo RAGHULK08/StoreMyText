@@ -1,4 +1,3 @@
-# app.py
 import os
 import re
 import json
@@ -10,14 +9,14 @@ import logging
 import psycopg2
 from io import BytesIO
 from psycopg2.extras import DictCursor
-from flask import Flask, request, jsonify, redirect, session, url_for
+from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import click
 from datetime import datetime, timezone, timedelta
 import jwt
 
-# Google OAuth
+# Google OAuth libs
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
@@ -29,9 +28,9 @@ from google.auth.exceptions import RefreshError
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ---- env / config ----
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-BACKEND_URL = os.environ.get("BACKEND_URL", "") 
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "") 
+DATABASE_URL = os.environ.get("DATABASE_URL", "")  # full Neon pooled URL (include password & ?sslmode=require)
+BACKEND_URL = os.environ.get("BACKEND_URL", "")    # e.g. https://savetext-0pk6.onrender.com
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "")  # e.g. https://textgrab.netlify.app
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
@@ -45,7 +44,7 @@ if not BACKEND_URL:
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
 
-# Limit CORS to your frontend to avoid browser blocks - set FRONTEND_URL in env
+# CORS: restrict to front-end origin if provided
 if FRONTEND_URL:
     CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}, supports_credentials=True)
 else:
@@ -96,8 +95,8 @@ def init_db():
             END;
             $$ LANGUAGE plpgsql;
             """)
+            cur.execute("DROP TRIGGER IF EXISTS set_timestamp ON notes;")
             cur.execute("""
-            DROP TRIGGER IF EXISTS set_timestamp ON notes;
             CREATE TRIGGER set_timestamp
             BEFORE UPDATE ON notes
             FOR EACH ROW
@@ -117,11 +116,7 @@ def init_db_command():
 
 # ---------------- JWT helpers ----------------
 def create_token(user_id):
-    payload = {
-        "sub": str(user_id),
-        "iat": datetime.utcnow(),
-        "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)
-    }
+    payload = {"sub": str(user_id), "iat": datetime.utcnow(), "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)}
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
     if isinstance(token, bytes):
         token = token.decode()
@@ -145,7 +140,9 @@ def get_user_id_from_request(req):
     return None
 
 # ---------------- secure state helpers ----------------
-# We will encode user_id + timestamp + HMAC signature into state so callback can identify user
+# HMAC state encodes user_id:timestamp:sig (base64url)
+STATE_TTL_SECONDS = 600  # 10 minutes
+
 def make_oauth_state(user_id):
     ts = str(int(time.time()))
     msg = f"{user_id}:{ts}".encode()
@@ -153,7 +150,7 @@ def make_oauth_state(user_id):
     raw = f"{user_id}:{ts}:{sig}"
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
-def verify_oauth_state(state_b64, max_age_seconds=600):
+def verify_oauth_state(state_b64, max_age_seconds=STATE_TTL_SECONDS):
     try:
         raw = base64.urlsafe_b64decode(state_b64.encode()).decode()
         parts = raw.split(":")
@@ -184,6 +181,21 @@ def build_client_config():
         }
     }
 
+def get_absolute_redirect_uri():
+    """
+    Build absolute redirect URI for Google callback.
+    Priority:
+      1) BACKEND_URL env var (preferred)
+      2) request.url_root (runtime fallback)
+    """
+    if BACKEND_URL:
+        base = BACKEND_URL.rstrip("/")
+    else:
+        base = request.url_root.rstrip("/") if request else ""
+    redirect = base + "/auth/google/callback"
+    logging.info(f"Using Google OAuth redirect_uri: {redirect}")
+    return redirect
+
 def get_drive_service_from_creds_json(creds_json):
     if not creds_json:
         return None, None
@@ -197,6 +209,7 @@ def get_drive_service_from_creds_json(creds_json):
             client_secret=creds_info.get("client_secret"),
             scopes=creds_info.get("scopes"),
         )
+        # Refresh if expired
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(GoogleRequest())
@@ -316,8 +329,8 @@ def me():
 @app.route("/auth/google/start", methods=["GET"])
 def google_auth_start():
     """
-    Start Google OAuth flow. Requires logged-in user.
-    Returns an authorization URL to which the frontend should redirect.
+    Start Google OAuth flow. Requires logged-in user (JWT).
+    Returns JSON with auth_url and redirect_uri (for debugging).
     """
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         return jsonify({"error": "Google OAuth not configured on server"}), 500
@@ -326,11 +339,8 @@ def google_auth_start():
     if not user_id:
         return jsonify({"error": "Authorization required (login first)"}), 401
 
-    # Create a secure state that encodes user_id + timestamp and HMAC
     state = make_oauth_state(user_id)
-
-    # Redirect URI must match exactly what's registered in Google Console
-    redirect_uri = BACKEND_URL.rstrip("/") + "/auth/google/callback"
+    redirect_uri = get_absolute_redirect_uri()
 
     flow = Flow.from_client_config(
         build_client_config(),
@@ -340,27 +350,25 @@ def google_auth_start():
 
     auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true",
                                         prompt="consent", state=state)
-    return jsonify({"auth_url": auth_url})
+    # Return both values to make debugging easier
+    return jsonify({"auth_url": auth_url, "redirect_uri": redirect_uri})
 
 @app.route("/auth/google/callback", methods=["GET"])
 def google_auth_callback():
     """
-    Google redirects back here. We verify 'state' to find user_id, then exchange code for tokens.
-    After saving, redirect back to FRONTEND_URL with success or error.
+    Google redirects back here. Verify 'state' to find user_id, then exchange code and save credentials.
     """
-    # state comes from Google query param
     state = request.args.get("state")
     if not state:
         logging.warning("OAuth callback missing state")
-        return redirect(FRONTEND_URL + "?google_link_error=1")
+        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
     user_id = verify_oauth_state(state)
     if not user_id:
         logging.warning("OAuth callback state invalid or expired")
-        return redirect(FRONTEND_URL + "?google_link_error=1")
+        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-    # Build Flow with same redirect_uri
-    redirect_uri = BACKEND_URL.rstrip("/") + "/auth/google/callback"
+    redirect_uri = get_absolute_redirect_uri()
     flow = Flow.from_client_config(
         build_client_config(),
         scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
@@ -372,27 +380,26 @@ def google_auth_callback():
         flow.fetch_token(authorization_response=request.url)
     except Exception as e:
         logging.error(f"Error fetching token from Google: {e}")
-        return redirect(FRONTEND_URL + "?google_link_error=1")
+        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
     creds = flow.credentials
-    # Save creds JSON to the user row
     conn = get_db_connection()
     if not conn:
         logging.error("DB connection failed while saving google creds")
-        return redirect(FRONTEND_URL + "?google_link_error=1")
+        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
     try:
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(creds), user_id))
         conn.commit()
         logging.info(f"Saved Google creds for user {user_id}")
-        return redirect(FRONTEND_URL + "?google_link_success=1")
+        return redirect((FRONTEND_URL or "/") + "?google_link_success=1")
     except Exception as e:
         logging.error(f"Saving google creds error: {e}")
-        return redirect(FRONTEND_URL + "?google_link_error=1")
+        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
     finally:
         conn.close()
 
-# ---------------- Notes endpoints (save/history/delete) ----------------
+# ---------------- Notes endpoints ----------------
 @app.route("/save", methods=["POST"])
 def save_text():
     user_id = get_user_id_from_request(request)
@@ -425,7 +432,7 @@ def save_text():
                     service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
                     if service:
                         drive_file_id = upload_or_update_file(service, filename, content, existing_file_id=existing_drive_id)
-                        if refreshed_creds and refreshed_creds.refresh_token:
+                        if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
                             cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
 
                 cur.execute("""
@@ -440,7 +447,7 @@ def save_text():
                     service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
                     if service:
                         drive_file_id = upload_or_update_file(service, filename, content)
-                        if refreshed_creds and refreshed_creds.refresh_token:
+                        if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
                             cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
                 cur.execute("""
                     INSERT INTO notes (user_id, filename, filecontent, title, drive_file_id)
@@ -502,7 +509,7 @@ def delete_notes():
             service = None
             if creds_json:
                 service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
-                if refreshed_creds and refreshed_creds.refresh_token:
+                if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
                     cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
             deleted_count = 0
             for it in items:
@@ -517,6 +524,11 @@ def delete_notes():
         return jsonify({"error": "Failed to delete notes"}), 500
     finally:
         conn.close()
+
+# ---------------- Health endpoint ----------------
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "backend_url": BACKEND_URL or request.url_root}), 200
 
 # ---------------- Run server ----------------
 if __name__ == "__main__":
