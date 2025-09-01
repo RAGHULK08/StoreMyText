@@ -25,6 +25,9 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request as GoogleRequest
 from google.auth.exceptions import RefreshError
 
+# requests for manual token exchange fallback
+import requests
+
 # ---- logging ----
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -42,9 +45,10 @@ JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+# tell Flask about the external preferred scheme
 app.config['PREFERRED_URL_SCHEME'] = 'https'
 
-# Trust the proxy headers supplied by Render 
+# Trust the proxy headers supplied by Render (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # CORS: restrict to front-end origin if provided
@@ -201,7 +205,7 @@ def get_drive_service_from_creds_json(creds_json):
         creds_info = json.loads(creds_json)
         scopes = creds_info.get("scopes") or []
         if isinstance(scopes, str):
-            scopes = [scopes]
+            scopes = scopes.split()
         creds = Credentials(
             token=creds_info.get("token"),
             refresh_token=creds_info.get("refresh_token"),
@@ -381,15 +385,54 @@ def google_auth_callback():
         scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
         redirect_uri=redirect_uri
     )
-
     try:
         flow.fetch_token(authorization_response=request.url)
+        creds = flow.credentials
     except Exception:
-        logging.exception("Error fetching token from Google (fetch_token failed)")
-        logging.info(f"Callback query params: {dict(request.args)}")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+        logging.exception("Error fetching token from Google (fetch_token failed). Attempting manual token exchange fallback.")
+        code = request.args.get("code")
+        if not code:
+            logging.error("No code param present in callback; cannot perform manual exchange.")
+            return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-    creds = flow.credentials
+        token_uri = flow.client_config["web"].get("token_uri", "https://oauth2.googleapis.com/token")
+        payload = {
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code"
+        }
+        try:
+            resp = requests.post(token_uri, data=payload, headers={"Accept": "application/json"}, timeout=10)
+        except Exception as e:
+            logging.exception(f"Manual token exchange request failed: {e}")
+            return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
+        if resp.status_code != 200:
+            logging.error(f"Manual token exchange failed: status={resp.status_code} body={resp.text}")
+            return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
+        token_resp = resp.json()
+        access_token = token_resp.get("access_token")
+        refresh_token = token_resp.get("refresh_token")
+        token_uri_resp = token_resp.get("token_uri", token_uri)
+        scope_str = token_resp.get("scope") or request.args.get("scope", "")
+        scopes = scope_str.split() if isinstance(scope_str, str) and scope_str else None
+
+        if not access_token:
+            logging.error(f"Manual token exchange returned no access_token: {token_resp}")
+            return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
+        creds = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=token_uri_resp,
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            scopes=scopes
+        )
+
     has_refresh = getattr(creds, "refresh_token", None) is not None
     logging.info(f"Token exchange OK for user {user_id}. refresh_token_present={has_refresh}")
 
