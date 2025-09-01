@@ -12,6 +12,7 @@ from psycopg2.extras import DictCursor
 from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 import click
 from datetime import datetime, timezone, timedelta
 import jwt
@@ -28,12 +29,12 @@ from google.auth.exceptions import RefreshError
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ---- env / config ----
-DATABASE_URL = os.environ.get("DATABASE_URL", "") 
-BACKEND_URL = os.environ.get("BACKEND_URL", "")   
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+BACKEND_URL = os.environ.get("BACKEND_URL", "")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-REDIRECT_URI = os.environ.get("REDIRECT_URI", "") 
+REDIRECT_URI = os.environ.get("REDIRECT_URI", "")
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
 JWT_SECRET = os.environ.get("JWT_SECRET", FLASK_SECRET_KEY)
 JWT_ALGO = "HS256"
@@ -41,13 +42,19 @@ JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+# tell Flask about the external preferred scheme
+app.config['PREFERRED_URL_SCHEME'] = 'https'
+
+# Trust the proxy headers supplied by Render (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
+# This is critical so request.scheme and request.url reflect the original (https) request.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # CORS: restrict to front-end origin if provided
 if FRONTEND_URL:
     CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}, supports_credentials=True)
 else:
     CORS(app, supports_credentials=True)
-    
+
 # ---------------- DB helpers ----------------
 def get_db_connection():
     try:
@@ -111,7 +118,7 @@ def init_db():
 def init_db_command():
     init_db()
     click.echo("Initialized DB.")
-    
+
 # ---------------- JWT helpers ----------------
 def create_token(user_id):
     payload = {"sub": str(user_id), "iat": datetime.utcnow(), "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)}
@@ -242,7 +249,7 @@ def delete_drive_file(service, file_id):
         logging.exception("Drive delete failed")
         return False
 
-# ---------------- Auth routes ----------------
+# ---------------- Auth routes (register/login/me) ----------------
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json() or {}
@@ -263,8 +270,8 @@ def register():
         return jsonify({"message": "User created", "token": token}), 201
     except psycopg2.IntegrityError:
         return jsonify({"error": "Email already registered"}), 409
-    except Exception as e:
-        logging.error(f"Register error: {e}")
+    except Exception:
+        logging.exception("Register error")
         return jsonify({"error": "Internal error"}), 500
     finally:
         conn.close()
@@ -285,8 +292,8 @@ def login():
             token = create_token(user["id"])
             return jsonify({"token": token, "message": "Login successful"}), 200
         return jsonify({"error": "Invalid credentials"}), 401
-    except Exception as e:
-        logging.error(f"Login error: {e}")
+    except Exception:
+        logging.exception("Login error")
         return jsonify({"error": "Internal error"}), 500
     finally:
         conn.close()
@@ -306,12 +313,13 @@ def me():
             if not row:
                 return jsonify({"error": "User not found"}), 404
             return jsonify({"id": row["id"], "email": row["email"], "drive_linked": row["drive_linked"]}), 200
-    except Exception as e:
-        logging.error(f"/me error: {e}")
+    except Exception:
+        logging.exception("/me error")
         return jsonify({"error": "Internal error"}), 500
     finally:
         conn.close()
 
+# ---------------- Google OAuth endpoints ----------------
 @app.route("/auth/google/start", methods=["GET"])
 def google_auth_start():
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
@@ -323,7 +331,7 @@ def google_auth_start():
 
     state = make_oauth_state(user_id)
     redirect_uri = effective_redirect_uri()
-    logging.info(f"google_auth_start redirect_uri={redirect_uri}")
+    logging.info(f"google_auth_start redirect_uri={redirect_uri} user={user_id}")
 
     flow = Flow.from_client_config(
         build_client_config(),
@@ -334,9 +342,10 @@ def google_auth_start():
     auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent", state=state)
     return jsonify({"auth_url": auth_url, "redirect_uri": redirect_uri})
 
-# ---------------- Google OAuth endpoints ----------------
 @app.route("/auth/google/callback", methods=["GET"])
 def google_auth_callback():
+    logging.info(f"Callback received: request.scheme={request.scheme} request.url={request.url} headers_proto={request.headers.get('X-Forwarded-Proto')}")
+
     if "error" in request.args:
         logging.error(f"Google OAuth returned error param: error={request.args.get('error')} description={request.args.get('error_description')}")
         return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
@@ -362,16 +371,13 @@ def google_auth_callback():
     )
 
     try:
-        # Try to fetch token and log diagnostics
         flow.fetch_token(authorization_response=request.url)
-    except Exception as e:
+    except Exception:
         logging.exception("Error fetching token from Google (fetch_token failed)")
-        # log full query for debugging — NOT secrets
         logging.info(f"Callback query params: {dict(request.args)}")
         return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
     creds = flow.credentials
-    # Diagnostics: check if refresh_token present
     has_refresh = getattr(creds, "refresh_token", None) is not None
     logging.info(f"Token exchange OK for user {user_id}. refresh_token_present={has_refresh}")
 
