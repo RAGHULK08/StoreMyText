@@ -16,6 +16,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import click
 from datetime import datetime, timezone, timedelta
 import jwt
+import traceback
 
 # Google OAuth libs
 from google.oauth2.credentials import Credentials
@@ -25,19 +26,16 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request as GoogleRequest
 from google.auth.exceptions import RefreshError
 
-# requests for manual token exchange fallback
-import requests
-
 # ---- logging ----
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ---- env / config ----
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-BACKEND_URL = os.environ.get("BACKEND_URL", "")
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-REDIRECT_URI = os.environ.get("REDIRECT_URI", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+BACKEND_URL = os.environ.get("BACKEND_URL", "").strip()
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "").strip()
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+REDIRECT_URI = os.environ.get("REDIRECT_URI", "").strip()
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
 JWT_SECRET = os.environ.get("JWT_SECRET", FLASK_SECRET_KEY)
 JWT_ALGO = "HS256"
@@ -45,13 +43,12 @@ JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
-# tell Flask about the external preferred scheme
 app.config['PREFERRED_URL_SCHEME'] = 'https'
 
-# Trust the proxy headers supplied by Render (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
+# Trust proxy headers
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
-# CORS: restrict to front-end origin if provided
+# CORS
 if FRONTEND_URL:
     CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}, supports_credentials=True)
 else:
@@ -59,11 +56,14 @@ else:
 
 # ---------------- DB helpers ----------------
 def get_db_connection():
+    if not DATABASE_URL:
+        logging.error("DATABASE_URL not provided")
+        return None
     try:
         conn = psycopg2.connect(DATABASE_URL)
         return conn
     except Exception as e:
-        logging.error(f"DB connection failed (postgres): {e}")
+        logging.exception("DB connection failed")
         return None
 
 def init_db():
@@ -197,6 +197,31 @@ def effective_redirect_uri():
         return request.url_root.rstrip("/") + "/auth/google/callback"
     except Exception:
         return "/auth/google/callback"
+
+def safe_post(token_uri, data, headers=None, timeout=10):
+    """
+    Try requests.post if available, otherwise use urllib as fallback.
+    Returns (status_code, response_text)
+    """
+    headers = headers or {"Accept": "application/json"}
+    try:
+        import requests 
+        resp = requests.post(token_uri, data=data, headers=headers, timeout=timeout)
+        return resp.status_code, resp.text
+    except Exception as e:
+        logging.info("requests not available or failed; falling back to urllib for token exchange: %s", str(e))
+        try:
+            from urllib import request as urllib_request
+            from urllib import parse as urllib_parse
+            body = urllib_parse.urlencode(data).encode("utf-8")
+            req = urllib_request.Request(token_uri, data=body, headers=headers or {})
+            with urllib_request.urlopen(req, timeout=timeout) as f:
+                status = f.getcode()
+                text = f.read().decode("utf-8")
+                return status, text
+        except Exception as e2:
+            logging.exception("urllib fallback for token exchange failed")
+            raise
 
 def get_drive_service_from_creds_json(creds_json):
     if not creds_json:
@@ -361,102 +386,117 @@ def google_auth_start():
 
 @app.route("/auth/google/callback", methods=["GET"])
 def google_auth_callback():
+    """
+    Very defensive callback: any unexpected exception is logged with full traceback
+    and the user is redirected with google_link_error=1 to the frontend.
+    """
     logging.info(f"Callback received: request.scheme={request.scheme} request.url={request.url} headers_proto={request.headers.get('X-Forwarded-Proto')}")
-
-    if "error" in request.args:
-        logging.error(f"Google OAuth returned error param: error={request.args.get('error')} description={request.args.get('error_description')}")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-
-    state = request.args.get("state")
-    if not state:
-        logging.warning("OAuth callback missing state")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-
-    user_id = verify_oauth_state(state)
-    if not user_id:
-        logging.warning("OAuth callback state invalid or expired")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-
-    redirect_uri = effective_redirect_uri()
-    logging.info(f"google_auth_callback redirect_uri={redirect_uri} for user={user_id}")
-
-    flow = Flow.from_client_config(
-        build_client_config(),
-        scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
-        redirect_uri=redirect_uri
-    )
     try:
-        flow.fetch_token(authorization_response=request.url)
-        creds = flow.credentials
-    except Exception:
-        logging.exception("Error fetching token from Google (fetch_token failed). Attempting manual token exchange fallback.")
-        code = request.args.get("code")
-        if not code:
-            logging.error("No code param present in callback; cannot perform manual exchange.")
+        if "error" in request.args:
+            logging.error(f"Google OAuth returned error param: error={request.args.get('error')} description={request.args.get('error_description')}")
             return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-        token_uri = flow.client_config["web"].get("token_uri", "https://oauth2.googleapis.com/token")
-        payload = {
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code"
-        }
-        try:
-            resp = requests.post(token_uri, data=payload, headers={"Accept": "application/json"}, timeout=10)
-        except Exception as e:
-            logging.exception(f"Manual token exchange request failed: {e}")
+        state = request.args.get("state")
+        if not state:
+            logging.warning("OAuth callback missing state")
             return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-        if resp.status_code != 200:
-            logging.error(f"Manual token exchange failed: status={resp.status_code} body={resp.text}")
+        user_id = verify_oauth_state(state)
+        if not user_id:
+            logging.warning("OAuth callback state invalid or expired")
             return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-        token_resp = resp.json()
-        access_token = token_resp.get("access_token")
-        refresh_token = token_resp.get("refresh_token")
-        token_uri_resp = token_resp.get("token_uri", token_uri)
-        scope_str = token_resp.get("scope") or request.args.get("scope", "")
-        scopes = scope_str.split() if isinstance(scope_str, str) and scope_str else None
+        redirect_uri = effective_redirect_uri()
+        logging.info(f"google_auth_callback redirect_uri={redirect_uri} for user={user_id}")
 
-        if not access_token:
-            logging.error(f"Manual token exchange returned no access_token: {token_resp}")
-            return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-
-        creds = Credentials(
-            token=access_token,
-            refresh_token=refresh_token,
-            token_uri=token_uri_resp,
-            client_id=GOOGLE_CLIENT_ID,
-            client_secret=GOOGLE_CLIENT_SECRET,
-            scopes=scopes
+        flow = Flow.from_client_config(
+            build_client_config(),
+            scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
+            redirect_uri=redirect_uri
         )
+        
+        creds = None
+        try:
+            flow.fetch_token(authorization_response=request.url)
+            creds = flow.credentials
+        except Exception:
+            logging.exception("fetch_token() failed. Attempting manual token exchange (fallback).")
+            code = request.args.get("code")
+            if not code:
+                logging.error("No code param present; manual exchange impossible.")
+                return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-    has_refresh = getattr(creds, "refresh_token", None) is not None
-    logging.info(f"Token exchange OK for user {user_id}. refresh_token_present={has_refresh}")
+            token_uri = flow.client_config["web"].get("token_uri", "https://oauth2.googleapis.com/token")
+            payload = {
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code"
+            }
+            try:
+                status, text = safe_post(token_uri, payload, headers={"Accept": "application/json"})
+            except Exception:
+                logging.exception("Manual token POST failed")
+                return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-    conn = get_db_connection()
-    if not conn:
-        logging.error("DB connection failed while saving google creds")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-    try:
-        user_id_int = int(user_id)
-        creds_json = creds_to_json(creds)
-        if not creds_json:
-            logging.error("Failed to serialize credentials")
+            if status != 200:
+                logging.error("Manual token exchange failed: status=%s body=%s", status, text)
+                return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
+            try:
+                token_resp = json.loads(text)
+            except Exception:
+                logging.exception("Failed to parse token response JSON")
+                return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
+            access_token = token_resp.get("access_token")
+            refresh_token = token_resp.get("refresh_token")
+            token_uri_resp = token_resp.get("token_uri", token_uri)
+            scope_str = token_resp.get("scope") or request.args.get("scope", "")
+            scopes = scope_str.split() if isinstance(scope_str, str) and scope_str else None
+
+            if not access_token:
+                logging.error("Manual token exchange returned no access_token.")
+                return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
+            creds = Credentials(
+                token=access_token,
+                refresh_token=refresh_token,
+                token_uri=token_uri_resp,
+                client_id=GOOGLE_CLIENT_ID,
+                client_secret=GOOGLE_CLIENT_SECRET,
+                scopes=scopes
+            )
+
+        has_refresh = getattr(creds, "refresh_token", None) is not None
+        logging.info(f"Token exchange OK for user {user_id}. refresh_token_present={has_refresh}")
+
+        # Save creds in DB
+        conn = get_db_connection()
+        if not conn:
+            logging.error("DB connection failed while saving google creds")
             return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+        try:
+            user_id_int = int(user_id)
+            creds_json = creds_to_json(creds)
+            if not creds_json:
+                logging.error("Failed to serialize credentials")
+                return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+            with conn.cursor() as cur:
+                cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_json, user_id_int))
+            conn.commit()
+            logging.info(f"Saved Google creds for user {user_id_int} (refresh_token_present={has_refresh})")
+            return redirect((FRONTEND_URL or "/") + "?google_link_success=1")
+        except Exception:
+            logging.exception("Saving google creds error")
+            return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+        finally:
+            conn.close()
 
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_json, user_id_int))
-        conn.commit()
-        logging.info(f"Saved Google creds for user {user_id_int} (refresh_token_present={has_refresh})")
-        return redirect((FRONTEND_URL or "/") + "?google_link_success=1")
     except Exception:
-        logging.exception("Saving google creds error")
+        logging.error("Unhandled exception in google_auth_callback:\n%s", traceback.format_exc())
         return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-    finally:
-        conn.close()
 
 # ---------------- Notes endpoints ----------------
 @app.route("/save", methods=["POST"])
@@ -521,7 +561,7 @@ def save_text():
         conn.commit()
         return jsonify({"message": message, "filename": filename, "drive_file_id": drive_file_id}), 200
     except Exception as e:
-        logging.error(f"Save note error: {e}")
+        logging.exception("Save note error")
         return jsonify({"error": "Failed to save note"}), 500
     finally:
         conn.close()
@@ -542,8 +582,8 @@ def get_history():
             """, (int(user_id),))
             notes = [dict(r) for r in cur.fetchall()]
         return jsonify(notes), 200
-    except Exception as e:
-        logging.error(f"Get history error: {e}")
+    except Exception:
+        logging.exception("Get history error")
         return jsonify({"error": "Failed to retrieve history"}), 500
     finally:
         conn.close()
@@ -584,8 +624,8 @@ def delete_notes():
             cur.execute("DELETE FROM notes WHERE user_id = %s AND filename = ANY(%s)", (int(user_id), filenames))
         conn.commit()
         return jsonify({"message": f"{len(filenames)} note(s) deleted; {deleted_count} Drive file(s) removed."}), 200
-    except Exception as e:
-        logging.error(f"Delete notes error: {e}")
+    except Exception:
+        logging.exception("Delete notes error")
         return jsonify({"error": "Failed to delete notes"}), 500
     finally:
         conn.close()
