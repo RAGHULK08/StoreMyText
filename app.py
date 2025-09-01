@@ -42,11 +42,9 @@ JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
-# tell Flask about the external preferred scheme
 app.config['PREFERRED_URL_SCHEME'] = 'https'
 
-# Trust the proxy headers supplied by Render (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
-# This is critical so request.scheme and request.url reflect the original (https) request.
+# Trust the proxy headers supplied by Render 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # CORS: restrict to front-end origin if provided
@@ -109,7 +107,7 @@ def init_db():
             """)
         conn.commit()
         logging.info("DB initialized / migrations applied")
-    except Exception as e:
+    except Exception:
         logging.exception("Error init DB")
     finally:
         conn.close()
@@ -175,12 +173,14 @@ def verify_oauth_state(state_b64, max_age_seconds=STATE_TTL_SECONDS):
 
 # ---------------- Google Drive helpers ----------------
 def build_client_config():
+    redirect_list = [REDIRECT_URI] if REDIRECT_URI else []
     return {
         "web": {
             "client_id": GOOGLE_CLIENT_ID,
             "client_secret": GOOGLE_CLIENT_SECRET,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": redirect_list,
         }
     }
 
@@ -189,22 +189,28 @@ def effective_redirect_uri():
         return REDIRECT_URI
     if BACKEND_URL:
         return BACKEND_URL.rstrip("/") + "/auth/google/callback"
-    return (request.url_root.rstrip("/") + "/auth/google/callback") if request else "/auth/google/callback"
+    try:
+        return request.url_root.rstrip("/") + "/auth/google/callback"
+    except Exception:
+        return "/auth/google/callback"
 
 def get_drive_service_from_creds_json(creds_json):
     if not creds_json:
         return None, None
     try:
         creds_info = json.loads(creds_json)
+        scopes = creds_info.get("scopes") or []
+        if isinstance(scopes, str):
+            scopes = [scopes]
         creds = Credentials(
             token=creds_info.get("token"),
             refresh_token=creds_info.get("refresh_token"),
             token_uri=creds_info.get("token_uri", "https://oauth2.googleapis.com/token"),
             client_id=creds_info.get("client_id"),
             client_secret=creds_info.get("client_secret"),
-            scopes=creds_info.get("scopes"),
+            scopes=scopes or None,
         )
-        if creds.expired and creds.refresh_token:
+        if creds and creds.expired and getattr(creds, "refresh_token", None):
             try:
                 creds.refresh(GoogleRequest())
             except RefreshError:
@@ -217,14 +223,21 @@ def get_drive_service_from_creds_json(creds_json):
         return None, None
 
 def creds_to_json(creds):
-    return json.dumps({
-        "token": creds.token,
-        "refresh_token": getattr(creds, "refresh_token", None),
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes": creds.scopes
-    })
+    try:
+        scopes = creds.scopes if getattr(creds, "scopes", None) is not None else []
+        if isinstance(scopes, (set, tuple)):
+            scopes = list(scopes)
+        return json.dumps({
+            "token": creds.token,
+            "refresh_token": getattr(creds, "refresh_token", None),
+            "token_uri": creds.token_uri,
+            "client_id": creds.client_id,
+            "client_secret": creds.client_secret,
+            "scopes": scopes
+        })
+    except Exception:
+        logging.exception("Error serializing credentials to JSON")
+        return None
 
 def upload_or_update_file(service, file_name, content, existing_file_id=None):
     try:
@@ -308,7 +321,7 @@ def me():
         return jsonify({"error": "Database connection failed"}), 500
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT id, email, google_creds_json IS NOT NULL AS drive_linked FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT id, email, google_creds_json IS NOT NULL AS drive_linked FROM users WHERE id = %s", (int(user_id),))
             row = cur.fetchone()
             if not row:
                 return jsonify({"error": "User not found"}), 404
@@ -366,8 +379,7 @@ def google_auth_callback():
     flow = Flow.from_client_config(
         build_client_config(),
         scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
-        redirect_uri=redirect_uri,
-        state=state
+        redirect_uri=redirect_uri
     )
 
     try:
@@ -386,10 +398,16 @@ def google_auth_callback():
         logging.error("DB connection failed while saving google creds")
         return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
     try:
+        user_id_int = int(user_id)
+        creds_json = creds_to_json(creds)
+        if not creds_json:
+            logging.error("Failed to serialize credentials")
+            return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(creds), user_id))
+            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_json, user_id_int))
         conn.commit()
-        logging.info(f"Saved Google creds for user {user_id} (refresh_token_present={has_refresh})")
+        logging.info(f"Saved Google creds for user {user_id_int} (refresh_token_present={has_refresh})")
         return redirect((FRONTEND_URL or "/") + "?google_link_success=1")
     except Exception:
         logging.exception("Saving google creds error")
@@ -416,13 +434,13 @@ def save_text():
 
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (int(user_id),))
             row = cur.fetchone()
             creds_json = row["google_creds_json"] if row else None
             drive_file_id = None
 
             if filename:
-                cur.execute("SELECT drive_file_id FROM notes WHERE filename = %s AND user_id = %s", (filename, user_id))
+                cur.execute("SELECT drive_file_id FROM notes WHERE filename = %s AND user_id = %s", (filename, int(user_id)))
                 r = cur.fetchone()
                 existing_drive_id = r["drive_file_id"] if r else None
 
@@ -431,13 +449,15 @@ def save_text():
                     if service:
                         drive_file_id = upload_or_update_file(service, filename, content, existing_file_id=existing_drive_id)
                         if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
+                            upd = creds_to_json(refreshed_creds)
+                            if upd:
+                                cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (upd, int(user_id)))
 
                 cur.execute("""
                     UPDATE notes
                     SET filecontent = %s, title = %s, drive_file_id = COALESCE(%s, drive_file_id)
                     WHERE filename = %s AND user_id = %s
-                """, (content, title, drive_file_id, filename, user_id))
+                """, (content, title, drive_file_id, filename, int(user_id)))
                 message = "Note updated"
             else:
                 filename = f"note_{int(datetime.now(timezone.utc).timestamp())}_{user_id}.txt"
@@ -446,11 +466,13 @@ def save_text():
                     if service:
                         drive_file_id = upload_or_update_file(service, filename, content)
                         if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
+                            upd = creds_to_json(refreshed_creds)
+                            if upd:
+                                cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (upd, int(user_id)))
                 cur.execute("""
                     INSERT INTO notes (user_id, filename, filecontent, title, drive_file_id)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (user_id, filename, content, title, drive_file_id))
+                """, (int(user_id), filename, content, title, drive_file_id))
                 message = "Note saved"
 
         conn.commit()
@@ -474,7 +496,7 @@ def get_history():
             cur.execute("""
                 SELECT filename, filecontent, title, drive_file_id, updated_at
                 FROM notes WHERE user_id = %s ORDER BY updated_at DESC
-            """, (user_id,))
+            """, (int(user_id),))
             notes = [dict(r) for r in cur.fetchall()]
         return jsonify(notes), 200
     except Exception as e:
@@ -499,22 +521,24 @@ def delete_notes():
 
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT filename, drive_file_id FROM notes WHERE user_id = %s AND filename = ANY(%s)", (user_id, filenames))
+            cur.execute("SELECT filename, drive_file_id FROM notes WHERE user_id = %s AND filename = ANY(%s)", (int(user_id), filenames))
             items = cur.fetchall()
-            cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (int(user_id),))
             row = cur.fetchone()
             creds_json = row["google_creds_json"] if row else None
             service = None
             if creds_json:
                 service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
                 if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                    cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
+                    upd = creds_to_json(refreshed_creds)
+                    if upd:
+                        cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (upd, int(user_id)))
             deleted_count = 0
             for it in items:
                 if it["drive_file_id"] and service:
                     if delete_drive_file(service, it["drive_file_id"]):
                         deleted_count += 1
-            cur.execute("DELETE FROM notes WHERE user_id = %s AND filename = ANY(%s)", (user_id, filenames))
+            cur.execute("DELETE FROM notes WHERE user_id = %s AND filename = ANY(%s)", (int(user_id), filenames))
         conn.commit()
         return jsonify({"message": f"{len(filenames)} note(s) deleted; {deleted_count} Drive file(s) removed."}), 200
     except Exception as e:
