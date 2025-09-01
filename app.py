@@ -30,16 +30,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # ---- env / config ----
 DATABASE_URL = os.environ.get("DATABASE_URL", "") 
 BACKEND_URL = os.environ.get("BACKEND_URL", "")   
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "") 
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+REDIRECT_URI = os.environ.get("REDIRECT_URI", "") 
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
 JWT_SECRET = os.environ.get("JWT_SECRET", FLASK_SECRET_KEY)
 JWT_ALGO = "HS256"
 JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
-
-if not BACKEND_URL:
-    logging.warning("BACKEND_URL not set — OAuth redirect URI may be wrong. Set BACKEND_URL to your backend base URL (https://...)")
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
@@ -49,7 +47,7 @@ if FRONTEND_URL:
     CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}, supports_credentials=True)
 else:
     CORS(app, supports_credentials=True)
-
+    
 # ---------------- DB helpers ----------------
 def get_db_connection():
     try:
@@ -105,7 +103,7 @@ def init_db():
         conn.commit()
         logging.info("DB initialized / migrations applied")
     except Exception as e:
-        logging.error(f"Error init DB: {e}")
+        logging.exception("Error init DB")
     finally:
         conn.close()
 
@@ -113,7 +111,7 @@ def init_db():
 def init_db_command():
     init_db()
     click.echo("Initialized DB.")
-
+    
 # ---------------- JWT helpers ----------------
 def create_token(user_id):
     payload = {"sub": str(user_id), "iat": datetime.utcnow(), "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)}
@@ -128,8 +126,8 @@ def decode_token(token):
         return payload.get("sub")
     except jwt.ExpiredSignatureError:
         return None
-    except Exception as e:
-        logging.warning(f"JWT decode error: {e}")
+    except Exception:
+        logging.exception("JWT decode error")
         return None
 
 def get_user_id_from_request(req):
@@ -140,9 +138,7 @@ def get_user_id_from_request(req):
     return None
 
 # ---------------- secure state helpers ----------------
-# HMAC state encodes user_id:timestamp:sig (base64url)
-STATE_TTL_SECONDS = 600  # 10 minutes
-
+STATE_TTL_SECONDS = 600
 def make_oauth_state(user_id):
     ts = str(int(time.time()))
     msg = f"{user_id}:{ts}".encode()
@@ -166,8 +162,8 @@ def verify_oauth_state(state_b64, max_age_seconds=STATE_TTL_SECONDS):
             logging.warning("OAuth state expired")
             return None
         return user_id
-    except Exception as e:
-        logging.warning(f"OAuth state verify error: {e}")
+    except Exception:
+        logging.exception("OAuth state verify error")
         return None
 
 # ---------------- Google Drive helpers ----------------
@@ -181,14 +177,12 @@ def build_client_config():
         }
     }
 
-def get_absolute_redirect_uri():
+def effective_redirect_uri():
+    if REDIRECT_URI:
+        return REDIRECT_URI
     if BACKEND_URL:
-        base = BACKEND_URL.rstrip("/")
-    else:
-        base = request.url_root.rstrip("/") if request else ""
-    redirect = base + "/auth/google/callback"
-    logging.info(f"Using Google OAuth redirect_uri: {redirect}")
-    return redirect
+        return BACKEND_URL.rstrip("/") + "/auth/google/callback"
+    return (request.url_root.rstrip("/") + "/auth/google/callback") if request else "/auth/google/callback"
 
 def get_drive_service_from_creds_json(creds_json):
     if not creds_json:
@@ -203,17 +197,16 @@ def get_drive_service_from_creds_json(creds_json):
             client_secret=creds_info.get("client_secret"),
             scopes=creds_info.get("scopes"),
         )
-        # Refresh if expired
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(GoogleRequest())
-            except RefreshError as e:
-                logging.warning(f"Could not refresh Google credentials: {e}")
+            except RefreshError:
+                logging.exception("Failed to refresh Google credentials")
                 return None, None
         service = build("drive", "v3", credentials=creds)
         return service, creds
-    except Exception as e:
-        logging.error(f"Error building drive service from creds: {e}")
+    except Exception:
+        logging.exception("Error building drive service from creds")
         return None, None
 
 def creds_to_json(creds):
@@ -237,16 +230,16 @@ def upload_or_update_file(service, file_name, content, existing_file_id=None):
             meta = {"name": file_name, "mimeType": "text/plain"}
             created = service.files().create(body=meta, media_body=media, fields="id").execute()
             return created.get("id")
-    except Exception as e:
-        logging.error(f"Drive upload/update failed: {e}")
+    except Exception:
+        logging.exception("Drive upload/update failed")
         return None
 
 def delete_drive_file(service, file_id):
     try:
         service.files().delete(fileId=file_id).execute()
         return True
-    except Exception as e:
-        logging.warning(f"Drive delete failed (file may already be gone): {e}")
+    except Exception:
+        logging.exception("Drive delete failed")
         return False
 
 # ---------------- Auth routes ----------------
@@ -319,22 +312,18 @@ def me():
     finally:
         conn.close()
 
-# ---------------- Google OAuth endpoints ----------------
 @app.route("/auth/google/start", methods=["GET"])
 def google_auth_start():
-    """
-    Start Google OAuth flow. Requires logged-in user (JWT).
-    Returns JSON with auth_url and redirect_uri (for debugging).
-    """
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        return jsonify({"error": "Google OAuth not configured on server"}), 500
+        return jsonify({"error": "Google OAuth not configured"}), 500
 
     user_id = get_user_id_from_request(request)
     if not user_id:
         return jsonify({"error": "Authorization required (login first)"}), 401
 
     state = make_oauth_state(user_id)
-    redirect_uri = get_absolute_redirect_uri()
+    redirect_uri = effective_redirect_uri()
+    logging.info(f"google_auth_start redirect_uri={redirect_uri}")
 
     flow = Flow.from_client_config(
         build_client_config(),
@@ -342,16 +331,16 @@ def google_auth_start():
         redirect_uri=redirect_uri
     )
 
-    auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true",
-                                        prompt="consent", state=state)
-    # Return both values to make debugging easier
+    auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent", state=state)
     return jsonify({"auth_url": auth_url, "redirect_uri": redirect_uri})
 
+# ---------------- Google OAuth endpoints ----------------
 @app.route("/auth/google/callback", methods=["GET"])
 def google_auth_callback():
-    """
-    Google redirects back here. Verify 'state' to find user_id, then exchange code and save credentials.
-    """
+    if "error" in request.args:
+        logging.error(f"Google OAuth returned error param: error={request.args.get('error')} description={request.args.get('error_description')}")
+        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+
     state = request.args.get("state")
     if not state:
         logging.warning("OAuth callback missing state")
@@ -362,7 +351,9 @@ def google_auth_callback():
         logging.warning("OAuth callback state invalid or expired")
         return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
-    redirect_uri = get_absolute_redirect_uri()
+    redirect_uri = effective_redirect_uri()
+    logging.info(f"google_auth_callback redirect_uri={redirect_uri} for user={user_id}")
+
     flow = Flow.from_client_config(
         build_client_config(),
         scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
@@ -371,12 +362,19 @@ def google_auth_callback():
     )
 
     try:
+        # Try to fetch token and log diagnostics
         flow.fetch_token(authorization_response=request.url)
     except Exception as e:
-        logging.error(f"Error fetching token from Google: {e}")
+        logging.exception("Error fetching token from Google (fetch_token failed)")
+        # log full query for debugging — NOT secrets
+        logging.info(f"Callback query params: {dict(request.args)}")
         return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
 
     creds = flow.credentials
+    # Diagnostics: check if refresh_token present
+    has_refresh = getattr(creds, "refresh_token", None) is not None
+    logging.info(f"Token exchange OK for user {user_id}. refresh_token_present={has_refresh}")
+
     conn = get_db_connection()
     if not conn:
         logging.error("DB connection failed while saving google creds")
@@ -385,10 +383,10 @@ def google_auth_callback():
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(creds), user_id))
         conn.commit()
-        logging.info(f"Saved Google creds for user {user_id}")
+        logging.info(f"Saved Google creds for user {user_id} (refresh_token_present={has_refresh})")
         return redirect((FRONTEND_URL or "/") + "?google_link_success=1")
-    except Exception as e:
-        logging.error(f"Saving google creds error: {e}")
+    except Exception:
+        logging.exception("Saving google creds error")
         return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
     finally:
         conn.close()
