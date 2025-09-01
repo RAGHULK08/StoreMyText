@@ -28,151 +28,191 @@ from google.auth.exceptions import RefreshError
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ---- env / config ----
-DATABASE_URL = os.environ.get("DATABASE_URL", "")  # full Neon pooled URL (include password & ?sslmode=require)
-BACKEND_URL = os.environ.get("BACKEND_URL", "")    # e.g. https://savetext-0pk6.onrender.com
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "")  # e.g. https://textgrab.netlify.app
+DATABASE_URL = os.environ.get("DATABASE_URL", "") 
+BACKEND_URL = os.environ.get("BACKEND_URL", "")    
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "")  
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
-JWT_SECRET = os.environ.get("JWT_SECRET", FLASK_SECRET_KEY)
-JWT_ALGO = "HS256"
-JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
+FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "default_flask_secret")
+JWT_SECRET = os.environ.get("JWT_SECRET", "default_jwt_secret")
 
-if not BACKEND_URL:
-    logging.warning("BACKEND_URL not set — OAuth redirect URI may be wrong. Set BACKEND_URL to your backend base URL (https://...)")
-
+# ---- App Initialization ----
 app = Flask(__name__)
-app.secret_key = FLASK_SECRET_KEY
+CORS(app, resources={r"/*": {"origins": [FRONTEND_URL] if FRONTEND_URL else "*"}})
 
-# CORS: restrict to front-end origin if provided
-if FRONTEND_URL:
-    CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}, supports_credentials=True)
-else:
-    CORS(app, supports_credentials=True)
-
-# ---------------- DB helpers ----------------
+# ---- DB connection ----
 def get_db_connection():
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
-    except Exception as e:
-        logging.error(f"DB connection failed (postgres): {e}")
-        return None
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
 
-def init_db():
+# ---- Google Drive / OAuth Helpers ----
+
+def get_absolute_redirect_uri(path="/auth/google/callback"):
+    if BACKEND_URL:
+        base_url = BACKEND_URL
+    else:
+        base_url = request.url_root.replace("http://", "https://")
+
+    # Cleanly join the base_url and the path
+    if base_url.endswith('/') and path.startswith('/'):
+        return base_url[:-1] + path
+    if not base_url.endswith('/') and not path.startswith('/'):
+        return base_url + '/' + path
+    return base_url + path
+
+
+def creds_to_json(creds):
+    """Serialize credentials to a JSON string."""
+    return json.dumps({
+        'token': creds.token,
+        'refresh_token': creds.refresh_token,
+        'token_uri': creds.token_uri,
+        'client_id': creds.client_id,
+        'client_secret': creds.client_secret,
+        'scopes': creds.scopes
+    })
+
+def get_drive_service_from_creds_json(creds_json):
+    """Builds a Google Drive service object from stored JSON credentials."""
+    creds = Credentials.from_authorized_user_info(json.loads(creds_json))
+    refreshed_creds = None
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(GoogleRequest())
+            refreshed_creds = creds
+        except RefreshError as e:
+            logging.error(f"Google credentials refresh error: {e}")
+            return None, None # cant refresh, so old creds are invalid
+    return build('drive', 'v3', credentials=creds), refreshed_creds
+
+def get_folder_id(service, folder_name="TextGrab"):
+    """Finds or creates a folder in Google Drive."""
+    q = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    response = service.files().list(q=q, spaces='drive', fields='files(id, name)').execute()
+    if not response.get('files'):
+        file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
+        folder = service.files().create(body=file_metadata, fields='id').execute()
+        return folder.get('id')
+    return response.get('files')[0].get('id')
+
+def upsert_drive_file(service, folder_id, title, content, file_id=None):
+    """Creates or updates a file in Google Drive."""
+    file_metadata = {'name': f"{title}.txt", 'parents': [folder_id]}
+    media = MediaIoBaseUpload(BytesIO(content.encode()), mimetype='text/plain', resumable=True)
+    if file_id:
+        file = service.files().update(fileId=file_id, body=file_metadata, media_body=media, fields='id').execute()
+    else:
+        file_metadata['mimeType'] = 'text/plain'
+        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    return file.get('id')
+
+def delete_drive_file(service, file_id):
+    """Permanently deletes a file from Google Drive."""
+    try:
+        service.files().delete(fileId=file_id).execute()
+        return True
+    except Exception as e:
+        logging.error(f"Failed to delete Drive file {file_id}: {e}")
+        return False
+
+
+# ---- JWT Auth Helpers ----
+def create_jwt_token(user_id):
+    payload = {
+        'iat': datetime.now(timezone.utc),
+        'exp': datetime.now(timezone.utc) + timedelta(days=7),
+        'sub': user_id
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
+
+def get_user_from_token(request):
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '): return None
+    token = auth_header.split(' ')[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+        return payload['sub']
+    except jwt.ExpiredSignatureError:
+        return 'expired'
+    except jwt.InvalidTokenError:
+        return None
+    return None
+
+# ---- Password Helpers (for local auth)----
+def hash_password(password):
+    return generate_password_hash(password)
+
+def check_password(hashed_password, password):
+    return check_password_hash(hashed_password, password)
+
+def is_valid_email(email):
+    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+
+# ---- Routes ----
+
+# ---------------- Auth endpoints ----------------
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password or not is_valid_email(email) or len(password) < 6:
+        return jsonify({'error': 'Invalid email or password (must be at least 6 characters)'}), 400
+
+    hashed_pw = hash_password(password)
     conn = get_db_connection()
-    if not conn:
-        logging.error("Cannot initialize DB: no connection")
-        return
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                google_creds_json TEXT
-            );
-            """)
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                filename TEXT NOT NULL,
-                filecontent TEXT,
-                title TEXT,
-                drive_file_id TEXT,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-            """)
-            cur.execute("""
-            CREATE OR REPLACE FUNCTION trigger_set_timestamp()
-            RETURNS TRIGGER AS $$
-            BEGIN
-              NEW.updated_at = NOW();
-              RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-            """)
-            cur.execute("DROP TRIGGER IF EXISTS set_timestamp ON notes;")
-            cur.execute("""
-            CREATE TRIGGER set_timestamp
-            BEFORE UPDATE ON notes
-            FOR EACH ROW
-            EXECUTE PROCEDURE trigger_set_timestamp();
-            """)
-        conn.commit()
-        logging.info("DB initialized / migrations applied")
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            if cur.fetchone():
+                return jsonify({'error': 'User already exists'}), 409
+            cur.execute(
+                "INSERT INTO users (email, password_hash, created_at) VALUES (%s, %s, NOW()) RETURNING id",
+                (email, hashed_pw)
+            )
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            token = create_jwt_token(user_id)
+            return jsonify({'token': token}), 201
     except Exception as e:
-        logging.error(f"Error init DB: {e}")
+        logging.error(f"Registration error: {e}")
+        conn.rollback()
+        return jsonify({'error': 'Registration failed'}), 500
     finally:
         conn.close()
 
-@app.cli.command("init-db")
-def init_db_command():
-    init_db()
-    click.echo("Initialized DB.")
 
-# ---------------- JWT helpers ----------------
-def create_token(user_id):
-    payload = {"sub": str(user_id), "iat": datetime.utcnow(), "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS)}
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
-    if isinstance(token, bytes):
-        token = token.decode()
-    return token
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
 
-def decode_token(token):
+    if not email or not password:
+        return jsonify({'error': 'Email and password are required'}), 400
+
+    conn = get_db_connection()
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-        return payload.get("sub")
-    except jwt.ExpiredSignatureError:
-        return None
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+            if user and check_password(user['password_hash'], password):
+                token = create_jwt_token(user['id'])
+                return jsonify({'token': token}), 200
+            else:
+                return jsonify({'error': 'Invalid credentials'}), 401
     except Exception as e:
-        logging.warning(f"JWT decode error: {e}")
-        return None
+        logging.error(f"Login error: {e}")
+        return jsonify({'error': 'Login failed'}), 500
+    finally:
+        conn.close()
 
-def get_user_id_from_request(req):
-    auth = req.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth.split(" ", 1)[1]
-        return decode_token(token)
-    return None
-
-# ---------------- secure state helpers ----------------
-# HMAC state encodes user_id:timestamp:sig (base64url)
-STATE_TTL_SECONDS = 600  # 10 minutes
-
-def make_oauth_state(user_id):
-    ts = str(int(time.time()))
-    msg = f"{user_id}:{ts}".encode()
-    sig = hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
-    raw = f"{user_id}:{ts}:{sig}"
-    return base64.urlsafe_b64encode(raw.encode()).decode()
-
-def verify_oauth_state(state_b64, max_age_seconds=STATE_TTL_SECONDS):
-    try:
-        raw = base64.urlsafe_b64decode(state_b64.encode()).decode()
-        parts = raw.split(":")
-        if len(parts) != 3:
-            return None
-        user_id, ts, sig = parts
-        msg = f"{user_id}:{ts}".encode()
-        expected = hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, sig):
-            logging.warning("OAuth state signature mismatch")
-            return None
-        if abs(int(time.time()) - int(ts)) > max_age_seconds:
-            logging.warning("OAuth state expired")
-            return None
-        return user_id
-    except Exception as e:
-        logging.warning(f"OAuth state verify error: {e}")
-        return None
-
-# ---------------- Google Drive helpers ----------------
-def build_client_config():
-    return {
+# ---------------- Google OAuth endpoints ----------------
+@app.route("/auth/google")
+def auth_google():
+    """Starts the Google OAuth flow."""
+    client_config = {
         "web": {
             "client_id": GOOGLE_CLIENT_ID,
             "client_secret": GOOGLE_CLIENT_SECRET,
@@ -180,342 +220,210 @@ def build_client_config():
             "token_uri": "https://oauth2.googleapis.com/token",
         }
     }
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=[
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/drive.file",
+            "openid"
+        ],
+    )
+    flow.redirect_uri = get_absolute_redirect_uri()
+    authorization_url, state = flow.authorization_url(access_type='offline', prompt='consent')
+    return jsonify({"auth_url": authorization_url})
 
-def get_absolute_redirect_uri():
-    """
-    Build absolute redirect URI for Google callback.
-    Priority:
-      1) BACKEND_URL env var (preferred)
-      2) request.url_root (runtime fallback)
-    """
-    if BACKEND_URL:
-        base = BACKEND_URL.rstrip("/")
-    else:
-        base = request.url_root.rstrip("/") if request else ""
-    redirect = base + "/auth/google/callback"
-    logging.info(f"Using Google OAuth redirect_uri: {redirect}")
-    return redirect
 
-def get_drive_service_from_creds_json(creds_json):
-    if not creds_json:
-        return None, None
+@app.route("/auth/google/callback")
+def oauth2callback():
+    """Handles the callback from Google after user authorization."""
     try:
-        creds_info = json.loads(creds_json)
-        creds = Credentials(
-            token=creds_info.get("token"),
-            refresh_token=creds_info.get("refresh_token"),
-            token_uri=creds_info.get("token_uri", "https://oauth2.googleapis.com/token"),
-            client_id=creds_info.get("client_id"),
-            client_secret=creds_info.get("client_secret"),
-            scopes=creds_info.get("scopes"),
+        client_config = {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        }
+        flow = Flow.from_client_config(
+            client_config,
+            scopes=None, # Scopes are not needed for token exchange
         )
-        # Refresh if expired
-        if creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(GoogleRequest())
-            except RefreshError as e:
-                logging.warning(f"Could not refresh Google credentials: {e}")
-                return None, None
-        service = build("drive", "v3", credentials=creds)
-        return service, creds
-    except Exception as e:
-        logging.error(f"Error building drive service from creds: {e}")
-        return None, None
-
-def creds_to_json(creds):
-    return json.dumps({
-        "token": creds.token,
-        "refresh_token": getattr(creds, "refresh_token", None),
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes": creds.scopes
-    })
-
-def upload_or_update_file(service, file_name, content, existing_file_id=None):
-    try:
-        fh = BytesIO(content.encode("utf-8"))
-        media = MediaIoBaseUpload(fh, mimetype="text/plain", resumable=False)
-        if existing_file_id:
-            updated = service.files().update(fileId=existing_file_id, media_body=media).execute()
-            return updated.get("id")
-        else:
-            meta = {"name": file_name, "mimeType": "text/plain"}
-            created = service.files().create(body=meta, media_body=media, fields="id").execute()
-            return created.get("id")
-    except Exception as e:
-        logging.error(f"Drive upload/update failed: {e}")
-        return None
-
-def delete_drive_file(service, file_id):
-    try:
-        service.files().delete(fileId=file_id).execute()
-        return True
-    except Exception as e:
-        logging.warning(f"Drive delete failed (file may already be gone): {e}")
-        return False
-
-# ---------------- Auth routes ----------------
-@app.route("/register", methods=["POST"])
-def register():
-    data = request.get_json() or {}
-    email = (data.get("email") or "").strip().lower()
-    password = (data.get("password") or "").strip()
-    if not email or not password or not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        return jsonify({"error": "Invalid email or password"}), 400
-    hashed = generate_password_hash(password)
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
-    try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id", (email, hashed))
-            new_id = cur.fetchone()[0]
-        conn.commit()
-        token = create_token(new_id)
-        return jsonify({"message": "User created", "token": token}), 201
-    except psycopg2.IntegrityError:
-        return jsonify({"error": "Email already registered"}), 409
-    except Exception as e:
-        logging.error(f"Register error: {e}")
-        return jsonify({"error": "Internal error"}), 500
-    finally:
-        conn.close()
-
-@app.route("/login", methods=["POST"])
-def login():
-    data = request.get_json() or {}
-    email = (data.get("email") or "").strip().lower()
-    password = (data.get("password") or "").strip()
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
-    try:
-        with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
-            user = cur.fetchone()
-        if user and user["password_hash"] and check_password_hash(user["password_hash"], password):
-            token = create_token(user["id"])
-            return jsonify({"token": token, "message": "Login successful"}), 200
-        return jsonify({"error": "Invalid credentials"}), 401
-    except Exception as e:
-        logging.error(f"Login error: {e}")
-        return jsonify({"error": "Internal error"}), 500
-    finally:
-        conn.close()
-
-@app.route("/me", methods=["GET"])
-def me():
-    user_id = get_user_id_from_request(request)
-    if not user_id:
-        return jsonify({"error": "Authorization required"}), 401
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
-    try:
-        with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT id, email, google_creds_json IS NOT NULL AS drive_linked FROM users WHERE id = %s", (user_id,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "User not found"}), 404
-            return jsonify({"id": row["id"], "email": row["email"], "drive_linked": row["drive_linked"]}), 200
-    except Exception as e:
-        logging.error(f"/me error: {e}")
-        return jsonify({"error": "Internal error"}), 500
-    finally:
-        conn.close()
-
-# ---------------- Google OAuth endpoints ----------------
-@app.route("/auth/google/start", methods=["GET"])
-def google_auth_start():
-    """
-    Start Google OAuth flow. Requires logged-in user (JWT).
-    Returns JSON with auth_url and redirect_uri (for debugging).
-    """
-    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        return jsonify({"error": "Google OAuth not configured on server"}), 500
-
-    user_id = get_user_id_from_request(request)
-    if not user_id:
-        return jsonify({"error": "Authorization required (login first)"}), 401
-
-    state = make_oauth_state(user_id)
-    redirect_uri = get_absolute_redirect_uri()
-
-    flow = Flow.from_client_config(
-        build_client_config(),
-        scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
-        redirect_uri=redirect_uri
-    )
-
-    auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true",
-                                        prompt="consent", state=state)
-    # Return both values to make debugging easier
-    return jsonify({"auth_url": auth_url, "redirect_uri": redirect_uri})
-
-@app.route("/auth/google/callback", methods=["GET"])
-def google_auth_callback():
-    """
-    Google redirects back here. Verify 'state' to find user_id, then exchange code and save credentials.
-    """
-    state = request.args.get("state")
-    if not state:
-        logging.warning("OAuth callback missing state")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-
-    user_id = verify_oauth_state(state)
-    if not user_id:
-        logging.warning("OAuth callback state invalid or expired")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-
-    redirect_uri = get_absolute_redirect_uri()
-    flow = Flow.from_client_config(
-        build_client_config(),
-        scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
-        redirect_uri=redirect_uri,
-        state=state
-    )
-
-    try:
+        flow.redirect_uri = get_absolute_redirect_uri()
         flow.fetch_token(authorization_response=request.url)
-    except Exception as e:
-        logging.error(f"Error fetching token from Google: {e}")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+        creds = flow.credentials
+        
+        # Get user profile
+        user_info_service = build('oauth2', 'v2', credentials=creds)
+        user_info = user_info_service.userinfo().get().execute()
+        
+        email = user_info.get('email')
+        if not email:
+            return redirect(f"{FRONTEND_URL}?error=email_not_found")
 
-    creds = flow.credentials
-    conn = get_db_connection()
-    if not conn:
-        logging.error("DB connection failed while saving google creds")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(creds), user_id))
-        conn.commit()
-        logging.info(f"Saved Google creds for user {user_id}")
-        return redirect((FRONTEND_URL or "/") + "?google_link_success=1")
+        # Upsert user in DB
+        conn = get_db_connection()
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+            if user:
+                user_id = user['id']
+                # Update credentials for existing user
+                cur.execute("UPDATE users SET google_creds_json = %s, updated_at = NOW() WHERE id = %s", (creds_to_json(creds), user_id))
+            else:
+                # Create a new user
+                cur.execute(
+                    "INSERT INTO users (email, google_creds_json, created_at) VALUES (%s, %s, NOW()) RETURNING id",
+                    (email, creds_to_json(creds))
+                )
+                user_id = cur.fetchone()['id']
+            conn.commit()
+
+        # Generate JWT and redirect
+        app_token = create_jwt_token(user_id)
+        return redirect(f"{FRONTEND_URL}?token={app_token}&drive_linked=true")
+
     except Exception as e:
-        logging.error(f"Saving google creds error: {e}")
-        return redirect((FRONTEND_URL or "/") + "?google_link_error=1")
+        logging.error(f"OAuth callback error: {e}")
+        return redirect(f"{FRONTEND_URL}?error=oauth_failed")
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
+# ---------------- User Profile endpoint ----------------
+@app.route('/profile', methods=['GET'])
+def get_profile():
+    user_id = get_user_from_token(request)
+    if not user_id or user_id == 'expired':
+        return jsonify({"error": "Unauthorized"}), 401
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT email, google_creds_json IS NOT NULL as drive_linked FROM users WHERE id = %s", (user_id,))
+            user_profile = cur.fetchone()
+            if not user_profile:
+                return jsonify({"error": "User not found"}), 404
+            return jsonify(dict(user_profile)), 200
+    except Exception as e:
+        logging.error(f"Get profile error: {e}")
+        return jsonify({"error": "Failed to fetch profile"}), 500
     finally:
         conn.close()
 
 # ---------------- Notes endpoints ----------------
-@app.route("/save", methods=["POST"])
+@app.route('/save', methods=['POST'])
 def save_text():
-    user_id = get_user_id_from_request(request)
-    if not user_id:
-        return jsonify({"error": "Authorization required"}), 401
-    data = request.get_json() or {}
-    filename = data.get("filename")
-    content = data.get("content", "")
-    title = (data.get("title") or "").strip()
-    if not title:
-        return jsonify({"error": "Title required"}), 400
+    user_id = get_user_from_token(request)
+    if not user_id or user_id == 'expired':
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+    filename = data.get('filename') or f"note_{int(time.time())}.txt"
+    content = data.get('content', '')
 
     conn = get_db_connection()
-    if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
-
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
+            # Check for Drive integration
             cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
-            row = cur.fetchone()
-            creds_json = row["google_creds_json"] if row else None
+            creds_json = cur.fetchone()['google_creds_json']
             drive_file_id = None
+            
+            if creds_json:
+                service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
+                if service:
+                    folder_id = get_folder_id(service)
+                    # Check if this note is already linked to a drive file
+                    cur.execute("SELECT drive_file_id FROM notes WHERE user_id = %s AND filename = %s", (user_id, filename))
+                    note_row = cur.fetchone()
+                    existing_drive_file_id = note_row['drive_file_id'] if note_row else None
+                    drive_file_id = upsert_drive_file(service, folder_id, filename.replace('.txt', ''), content, existing_drive_file_id)
+                    # If creds were refreshed, save them back
+                    if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
+                         cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
 
-            if filename:
-                cur.execute("SELECT drive_file_id FROM notes WHERE filename = %s AND user_id = %s", (filename, user_id))
-                r = cur.fetchone()
-                existing_drive_id = r["drive_file_id"] if r else None
+            # Upsert note in DB
+            cur.execute("""
+                INSERT INTO notes (user_id, filename, content, drive_file_id, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, filename) DO UPDATE SET
+                content = EXCLUDED.content,
+                drive_file_id = EXCLUDED.drive_file_id,
+                updated_at = NOW();
+            """, (user_id, filename, content, drive_file_id))
+            conn.commit()
 
-                if creds_json:
-                    service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
-                    if service:
-                        drive_file_id = upload_or_update_file(service, filename, content, existing_file_id=existing_drive_id)
-                        if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
-
-                cur.execute("""
-                    UPDATE notes
-                    SET filecontent = %s, title = %s, drive_file_id = COALESCE(%s, drive_file_id)
-                    WHERE filename = %s AND user_id = %s
-                """, (content, title, drive_file_id, filename, user_id))
-                message = "Note updated"
-            else:
-                filename = f"note_{int(datetime.now(timezone.utc).timestamp())}_{user_id}.txt"
-                if creds_json:
-                    service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
-                    if service:
-                        drive_file_id = upload_or_update_file(service, filename, content)
-                        if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
-                            cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
-                cur.execute("""
-                    INSERT INTO notes (user_id, filename, filecontent, title, drive_file_id)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (user_id, filename, content, title, drive_file_id))
-                message = "Note saved"
-
-        conn.commit()
-        return jsonify({"message": message, "filename": filename, "drive_file_id": drive_file_id}), 200
+        return jsonify({"message": "Saved successfully", "filename": filename}), 200
     except Exception as e:
-        logging.error(f"Save note error: {e}")
-        return jsonify({"error": "Failed to save note"}), 500
+        logging.error(f"Save text error: {e}")
+        conn.rollback()
+        return jsonify({"error": "Failed to save"}), 500
     finally:
         conn.close()
 
-@app.route("/history", methods=["GET"])
+
+@app.route('/history', methods=['GET'])
 def get_history():
-    user_id = get_user_id_from_request(request)
-    if not user_id:
-        return jsonify({"error": "Authorization required"}), 401
+    user_id = get_user_from_token(request)
+    if not user_id or user_id == 'expired':
+        return jsonify({"error": "Unauthorized"}), 401
+
     conn = get_db_connection()
-    if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("""
-                SELECT filename, filecontent, title, drive_file_id, updated_at
-                FROM notes WHERE user_id = %s ORDER BY updated_at DESC
-            """, (user_id,))
-            notes = [dict(r) for r in cur.fetchall()]
-        return jsonify(notes), 200
+            cur.execute(
+                "SELECT filename, content, updated_at, drive_file_id IS NOT NULL as is_on_drive FROM notes WHERE user_id = %s ORDER BY updated_at DESC",
+                (user_id,)
+            )
+            notes = [dict(row) for row in cur.fetchall()]
+            return jsonify(notes), 200
     except Exception as e:
         logging.error(f"Get history error: {e}")
         return jsonify({"error": "Failed to retrieve history"}), 500
     finally:
         conn.close()
 
-@app.route("/delete", methods=["POST"])
+
+@app.route('/delete', methods=['POST'])
 def delete_notes():
-    user_id = get_user_id_from_request(request)
-    if not user_id:
-        return jsonify({"error": "Authorization required"}), 401
-    data = request.get_json() or {}
-    filenames = data.get("filenames")
+    user_id = get_user_from_token(request)
+    if not user_id or user_id == 'expired':
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+    filenames = data.get('filenames')
     if not isinstance(filenames, list) or not filenames:
-        return jsonify({"error": "filenames must be a non-empty list"}), 400
+        return jsonify({"error": "Invalid request"}), 400
 
     conn = get_db_connection()
-    if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
-
     try:
         with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT filename, drive_file_id FROM notes WHERE user_id = %s AND filename = ANY(%s)", (user_id, filenames))
+            # Get drive file IDs for the notes to be deleted
+            cur.execute(
+                "SELECT filename, drive_file_id FROM notes WHERE user_id = %s AND filename = ANY(%s)",
+                (user_id, filenames)
+            )
             items = cur.fetchall()
+            
+            # Get user's google creds
             cur.execute("SELECT google_creds_json FROM users WHERE id = %s", (user_id,))
             row = cur.fetchone()
             creds_json = row["google_creds_json"] if row else None
+            
             service = None
             if creds_json:
                 service, refreshed_creds = get_drive_service_from_creds_json(creds_json)
                 if refreshed_creds and getattr(refreshed_creds, "refresh_token", None):
                     cur.execute("UPDATE users SET google_creds_json = %s WHERE id = %s", (creds_to_json(refreshed_creds), user_id))
+
             deleted_count = 0
             for it in items:
                 if it["drive_file_id"] and service:
                     if delete_drive_file(service, it["drive_file_id"]):
                         deleted_count += 1
+
             cur.execute("DELETE FROM notes WHERE user_id = %s AND filename = ANY(%s)", (user_id, filenames))
         conn.commit()
         return jsonify({"message": f"{len(filenames)} note(s) deleted; {deleted_count} Drive file(s) removed."}), 200
@@ -528,11 +436,48 @@ def delete_notes():
 # ---------------- Health endpoint ----------------
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "backend_url": BACKEND_URL or request.url_root}), 200
+    return jsonify({"status": "ok", "backend_url": BACKEND_URL or request.url_root.replace('http://', 'https://')}), 200
 
-# ---------------- Run server ----------------
-if __name__ == "__main__":
-    with app.app_context():
-        init_db()
-    port = int(os.environ.get("PORT", 5001))
-    app.run(host="0.0.0.0", port=port, debug=False)
+# ---------------- DB Init Command ----------------
+@click.command('init-db')
+def init_db_command():
+    """Initializes the database by creating the users and notes tables."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS notes;")
+            cur.execute("DROP TABLE IF EXISTS users;")
+            cur.execute("""
+                CREATE TABLE users (
+                    id SERIAL PRIMARY KEY,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    password_hash VARCHAR(255),
+                    google_creds_json TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE,
+                    updated_at TIMESTAMP WITH TIME ZONE
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE notes (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    filename VARCHAR(255) NOT NULL,
+                    content TEXT,
+                    drive_file_id VARCHAR(255),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE,
+                    UNIQUE(user_id, filename)
+                );
+            """)
+            conn.commit()
+            print("Database initialized.")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+    finally:
+        conn.close()
+
+app.cli.add_command(init_db_command)
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port)
