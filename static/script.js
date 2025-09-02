@@ -40,9 +40,10 @@
             selectAllNotes: document.getElementById("selectAllNotes"),
         },
         displays: {
-            mainStatus: document.getElementById("mainStatus"),
-            loginStatus: document.getElementById("loginStatus"),
-            registerStatus: document.getElementById("registerStatus"),
+            // map to the IDs actually present in index.html
+            mainStatus: document.getElementById("status"),
+            loginStatus: document.getElementById("loginMsg"),
+            registerStatus: document.getElementById("registerMsg"),
             historyStatus: document.getElementById("historyStatus"),
             historyList: document.getElementById("historyList"),
             userEmail: document.getElementById("userEmail"),
@@ -58,7 +59,6 @@
             goToLogin: document.getElementById("goToLogin"),
             backToMain: document.getElementById("backToMain"),
             cancelEdit: document.getElementById("cancelEditBtn"),
-            selectAllNotes: document.getElementById("selectAllNotes"),
             deleteSelected: document.getElementById("deleteSelectedBtn"),
             connectDrive: document.getElementById("connectDriveBtn"),
             closeViewModal: document.getElementById("closeViewModal"),
@@ -70,8 +70,11 @@
     async function apiRequest(endpoint, method = "GET", body = null) {
         const options = {
             method: method,
-            headers: { "Authorization": `Bearer ${state.token}` }
+            headers: {}
         };
+        if (state.token) {
+            options.headers["Authorization"] = `Bearer ${state.token}`;
+        }
         if (body) {
             options.headers["Content-Type"] = "application/json";
             options.body = JSON.stringify(body);
@@ -79,8 +82,9 @@
         try {
             const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
             if (response.status === 401) {
+                // token invalid or expired
                 logout();
-                return null;
+                throw new Error("Unauthorized - please login again.");
             }
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({ error: "An unknown error occurred" }));
@@ -96,8 +100,8 @@
     // --- Authentication ---
     async function handleAuth(e, endpoint, statusEl, emailInput, passwordInput) {
         e.preventDefault();
-        const email = emailInput.value;
-        const password = passwordInput.value;
+        const email = (emailInput.value || "").trim();
+        const password = (passwordInput.value || "").trim();
         if (!email || !password) {
             showMessage(statusEl, "Email and password are required.", "error");
             return;
@@ -113,7 +117,7 @@
                 showMessage(statusEl, data.error || "Authentication failed.", "error");
             }
         } catch (error) {
-            showMessage(statusEl, error.message, "error");
+            showMessage(statusEl, error.message || "Authentication error", "error");
         } finally {
             showLoader(false);
         }
@@ -125,42 +129,55 @@
         state.userEmail = null;
         state.driveLinked = false;
         UI.displays.userEmail.textContent = "";
-        UI.buttons.logout.style.display = "none";
-        UI.buttons.connectDrive.style.display = "none";
+        if (UI.buttons.logout) UI.buttons.logout.style.display = "none";
+        if (UI.buttons.connectDrive) UI.buttons.connectDrive.style.display = "none";
         showView("login");
+        showMessage(UI.displays.mainStatus, "Logged out.", "info", 2500);
     }
 
     // --- UI & View Management ---
     function showView(viewName) {
         state.currentView = viewName;
         for (const key in UI.views) {
-            UI.views[key].style.display = key === viewName ? "block" : "none";
+            if (!UI.views[key]) continue;
+            // keep modal separate - only show it when requested
+            if (key === "viewNoteModal") {
+                UI.views[key].style.display = (viewName === key) ? "flex" : "none";
+                continue;
+            }
+            UI.views[key].style.display = (key === viewName) ? "block" : "none";
         }
         if (viewName === "main") {
-            UI.inputs.textInput.focus();
+            setTimeout(() => {
+                if (UI.inputs.textInput) UI.inputs.textInput.focus();
+            }, 50);
         }
     }
 
     function showLoader(show) {
-        document.getElementById("loader").style.display = show ? "flex" : "none";
+        const loader = document.getElementById("loader");
+        if (!loader) return;
+        loader.style.display = show ? "flex" : "none";
     }
 
     function showMessage(element, message, type = "info", duration = 4000) {
         if (!element) return;
-        element.textContent = message;
-        element.className = `message message--${type}`;
+        element.textContent = message || "";
+        element.className = `message ${type} show`; 
         element.style.display = "block";
         clearTimeout(state.messageTimeout);
         if (duration > 0) {
             state.messageTimeout = setTimeout(() => {
-                element.style.display = "none";
+                element.classList.remove("show");
+                // hide after animation settle
+                setTimeout(() => { element.style.display = "none"; }, 300);
             }, duration);
         }
     }
 
     function escapeHTML(str) {
-        if (!str) return "";
-        return str.replace(/[&<>"']/g, (match) => {
+        if (str === undefined || str === null) return "";
+        return String(str).replace(/[&<>"']/g, (match) => {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[match];
         });
     }
@@ -179,8 +196,8 @@
     // --- Note Management ---
     async function handleSaveNote(e) {
         e.preventDefault();
-        const content = UI.inputs.textInput.value.trim();
-        const title = UI.inputs.noteTitle.value.trim();
+        const content = (UI.inputs.textInput.value || "").trim();
+        const title = (UI.inputs.noteTitle.value || "").trim();
         if (!title) {
             showMessage(UI.displays.mainStatus, "Title is required to save the note.", "error");
             return;
@@ -190,10 +207,12 @@
         try {
             const payload = { title, content, filename: state.editingFilename };
             const data = await apiRequest("/save", "POST", payload);
-            showMessage(UI.displays.mainStatus, data.message, "success");
+            showMessage(UI.displays.mainStatus, data.message || "Saved", "success");
             resetEditor();
+            // refresh history cache so the saved note shows up next time user opens history
+            await fetchHistory();
         } catch (error) {
-            showMessage(UI.displays.mainStatus, error.message, "error");
+            showMessage(UI.displays.mainStatus, error.message || "Failed to save note", "error");
         } finally {
             showLoader(false);
         }
@@ -201,19 +220,22 @@
 
     async function fetchHistory() {
         showLoader(true);
-        UI.displays.historyStatus.style.display = "none";
+        if (UI.displays.historyStatus) UI.displays.historyStatus.style.display = "none";
         try {
             const data = await apiRequest("/history");
-            state.notesCache = data || [];
-            renderHistory();
+            state.notesCache = Array.isArray(data) ? data : [];
+            renderHistory(UI.inputs.searchNotes ? UI.inputs.searchNotes.value : "");
         } catch (error) {
-            showMessage(UI.displays.historyStatus, error.message, "error");
+            showMessage(UI.displays.historyStatus, error.message || "Failed to fetch history", "error");
+            state.notesCache = [];
+            renderHistory();
         } finally {
             showLoader(false);
         }
     }
 
     async function handleDeleteNote(filenames) {
+        if (!filenames || filenames.length === 0) return;
         const confirmed = await customConfirm(`Are you sure you want to delete ${filenames.length} note(s)? This action cannot be undone.`);
         if (!confirmed) return;
 
@@ -227,7 +249,7 @@
             updateBulkActionUI();
             showMessage(UI.displays.historyStatus, `Successfully deleted ${filenames.length} note(s).`, "success");
         } catch (error) {
-            showMessage(UI.displays.historyStatus, error.message, "error");
+            showMessage(UI.displays.historyStatus, error.message || "Failed to delete notes", "error");
         } finally {
             showLoader(false);
         }
@@ -235,7 +257,8 @@
 
     function renderHistory(searchTerm = "") {
         const list = UI.displays.historyList;
-        const lowerCaseSearchTerm = searchTerm.toLowerCase();
+        if (!list) return;
+        const lowerCaseSearchTerm = (searchTerm || "").toLowerCase();
         const notesToRender = state.notesCache.filter(note =>
             (note.title && note.title.toLowerCase().includes(lowerCaseSearchTerm)) ||
             (note.filecontent && note.filecontent.toLowerCase().includes(lowerCaseSearchTerm))
@@ -250,11 +273,16 @@
         });
 
         if (notesToRender.length === 0) {
-            list.innerHTML = `<p class="message">No notes found.</p>`;
+            list.innerHTML = `<p class="message info show">No notes found.</p>`;
+            // update bulk UI
+            state.selectedNotes.clear();
+            updateBulkActionUI();
             return;
         }
 
-        list.innerHTML = notesToRender.map(note => {
+        const html = notesToRender.map(note => {
+            // encode filename for safe data-* attribute use
+            const encodedFilename = encodeURIComponent(note.filename || "");
             const isSelected = state.selectedNotes.has(note.filename);
             const isPinned = state.pinnedNotes.has(note.filename);
             const driveIcon = note.drive_file_id ? `<span class="drive-icon" title="Synced with Google Drive">☁️</span>` : '';
@@ -262,9 +290,9 @@
             const pinClass = isPinned ? 'pinned' : '';
 
             return `
-            <div class="history-item ${isSelected ? 'selected' : ''} ${pinClass}" data-filename="${escapeHTML(note.filename)}">
+            <div class="history-item ${isSelected ? 'selected' : ''} ${pinClass}" data-filename="${encodedFilename}">
                 <div class="note-info">
-                    <input type="checkbox" class="note-select" data-filename="${escapeHTML(note.filename)}" ${isSelected ? 'checked' : ''}>
+                    <input type="checkbox" class="note-select" data-filename="${encodedFilename}" ${isSelected ? 'checked' : ''}>
                     <div class="note-text-content">
                         <h3 class="note-title">${escapeHTML(note.title)}</h3>
                         <div class="note-meta">
@@ -274,12 +302,15 @@
                     </div>
                 </div>
                 <div class="note-actions">
-                    <button class="btn-icon view-btn" data-filename="${escapeHTML(note.filename)}" title="View Note">👁️</button>
-                    <button class="btn-icon copy-btn" data-filename="${escapeHTML(note.filename)}" title="Copy Content">📋</button>
-                    <button class="btn-icon pin-btn ${pinClass}" data-filename="${escapeHTML(note.filename)}" title="${isPinned ? 'Unpin Note' : 'Pin Note'}">${pinIcon}</button>
+                    <button class="btn-icon view-btn" data-filename="${encodedFilename}" title="View Note">👁️</button>
+                    <button class="btn-icon copy-btn" data-filename="${encodedFilename}" title="Copy Content">📋</button>
+                    <button class="btn-icon pin-btn ${pinClass}" data-filename="${encodedFilename}" title="${isPinned ? 'Unpin Note' : 'Pin Note'}">${pinIcon}</button>
                 </div>
             </div>`;
-        }).join('');
+        }).join("");
+
+        list.innerHTML = html;
+        updateBulkActionUI();
     }
 
     function handleHistoryListClick(e) {
@@ -287,7 +318,8 @@
         const item = target.closest('.history-item');
         if (!item) return;
 
-        const filename = item.dataset.filename;
+        const encodedFilename = item.dataset.filename;
+        const filename = encodedFilename ? decodeURIComponent(encodedFilename) : "";
 
         if (target.classList.contains('note-select')) {
             toggleNoteSelection(filename);
@@ -306,10 +338,10 @@
     function handleViewNote(filename) {
         const note = state.notesCache.find(n => n.filename === filename);
         if (!note) return;
-        UI.displays.viewNoteTitle.textContent = note.title;
-        UI.displays.viewNoteContent.textContent = note.filecontent;
+        UI.displays.viewNoteTitle.textContent = note.title || "(untitled)";
+        UI.displays.viewNoteContent.textContent = note.filecontent || "";
         UI.views.viewNoteModal.style.display = 'flex';
-        UI.buttons.copyFromView.dataset.content = note.filecontent;
+        UI.buttons.copyFromView.dataset.content = note.filecontent || "";
     }
 
     function handleCopyNote(button, filename) {
@@ -327,6 +359,7 @@
     }
 
     function handlePinNote(filename) {
+        if (!filename) return;
         if (state.pinnedNotes.has(filename)) {
             state.pinnedNotes.delete(filename);
         } else {
@@ -338,32 +371,41 @@
 
     function editNote(note) {
         state.editingFilename = note.filename;
-        UI.inputs.noteTitle.value = note.title;
-        UI.inputs.textInput.value = note.filecontent;
-        UI.buttons.save.textContent = "Update Note";
-        UI.buttons.cancelEdit.style.display = "inline-block";
+        if (UI.inputs.noteTitle) UI.inputs.noteTitle.value = note.title || "";
+        if (UI.inputs.textInput) UI.inputs.textInput.value = note.filecontent || "";
+        if (UI.buttons.save) UI.buttons.save.textContent = "Update Note";
+        if (UI.buttons.cancelEdit) UI.buttons.cancelEdit.style.display = "inline-block";
         showView("main");
     }
 
     function resetEditor() {
         state.editingFilename = null;
-        UI.forms.note.reset();
-        UI.buttons.save.textContent = "Save Note";
-        UI.buttons.cancelEdit.style.display = "none";
-        showMessage(UI.displays.mainStatus, "", "info", 0);
+        if (UI.forms.note) UI.forms.note.reset();
+        if (UI.buttons.save) UI.buttons.save.textContent = "Save Note";
+        if (UI.buttons.cancelEdit) UI.buttons.cancelEdit.style.display = "none";
+        // clear main status message
+        if (UI.displays.mainStatus) {
+            UI.displays.mainStatus.textContent = "";
+            UI.displays.mainStatus.className = "message";
+            UI.displays.mainStatus.style.display = "none";
+        }
     }
 
     // --- Bulk Actions & Selection ---
     function toggleNoteSelection(filename) {
-        const checkbox = document.querySelector(`.note-select[data-filename="${escapeHTML(filename)}"]`);
+        if (!filename) return;
+        const encoded = encodeURIComponent(filename);
+        const checkbox = document.querySelector(`.note-select[data-filename="${encoded}"]`);
         if (!checkbox) return;
         const item = checkbox.closest('.history-item');
         if (state.selectedNotes.has(filename)) {
             state.selectedNotes.delete(filename);
-            item.classList.remove('selected');
+            item && item.classList.remove('selected');
+            checkbox.checked = false;
         } else {
             state.selectedNotes.add(filename);
-            item.classList.add('selected');
+            item && item.classList.add('selected');
+            checkbox.checked = true;
         }
         updateBulkActionUI();
     }
@@ -372,16 +414,16 @@
         const isChecked = e.target.checked;
         const visibleCheckboxes = document.querySelectorAll('#historyList .note-select');
         visibleCheckboxes.forEach(cb => {
-            const filename = cb.dataset.filename;
+            const filename = cb.dataset.filename ? decodeURIComponent(cb.dataset.filename) : "";
             const item = cb.closest('.history-item');
             if (isChecked) {
                 state.selectedNotes.add(filename);
                 cb.checked = true;
-                item.classList.add('selected');
+                item && item.classList.add('selected');
             } else {
                 state.selectedNotes.delete(filename);
                 cb.checked = false;
-                item.classList.remove('selected');
+                item && item.classList.remove('selected');
             }
         });
         updateBulkActionUI();
@@ -389,11 +431,14 @@
 
     function updateBulkActionUI() {
         const count = state.selectedNotes.size;
-        UI.buttons.deleteSelected.style.display = count > 0 ? 'inline-block' : 'none';
-        if (count > 0) {
+        if (UI.buttons.deleteSelected) UI.buttons.deleteSelected.style.display = count > 0 ? 'inline-block' : 'none';
+        if (UI.buttons.deleteSelected && count > 0) {
             UI.buttons.deleteSelected.textContent = `Delete (${count})`;
         }
-        UI.inputs.selectAllNotes.checked = (count > 0 && count === document.querySelectorAll('#historyList .note-select').length);
+        const visibleCheckboxes = document.querySelectorAll('#historyList .note-select');
+        if (UI.inputs.selectAllNotes) {
+            UI.inputs.selectAllNotes.checked = (visibleCheckboxes.length > 0 && count > 0 && count === visibleCheckboxes.length);
+        }
     }
 
     // --- Google Drive Integration ---
@@ -401,11 +446,13 @@
         showLoader(true);
         try {
             const data = await apiRequest("/auth/google/start");
-            if (data.auth_url) {
+            if (data && data.auth_url) {
                 window.location.href = data.auth_url;
+            } else {
+                showMessage(UI.displays.mainStatus, "Failed to start Drive connection.", "error");
             }
         } catch (error) {
-            showMessage(UI.displays.mainStatus, error.message, "error");
+            showMessage(UI.displays.mainStatus, error.message || "Drive connect failed", "error");
         } finally {
             showLoader(false);
         }
@@ -416,15 +463,17 @@
             const user = await apiRequest("/me");
             if (user) {
                 state.userEmail = user.email;
-                state.driveLinked = user.drive_linked;
-                UI.displays.userEmail.textContent = state.userEmail;
-                UI.buttons.connectDrive.style.display = 'inline-block';
-                UI.buttons.connectDrive.textContent = state.driveLinked ? "Drive Connected" : "Connect Drive";
-                UI.buttons.connectDrive.disabled = state.driveLinked;
+                state.driveLinked = !!user.drive_linked;
+                if (UI.displays.userEmail) UI.displays.userEmail.textContent = state.userEmail;
+                if (UI.buttons.connectDrive) {
+                    UI.buttons.connectDrive.style.display = 'inline-block';
+                    UI.buttons.connectDrive.textContent = state.driveLinked ? "Drive Connected" : "Connect Drive";
+                    UI.buttons.connectDrive.disabled = state.driveLinked;
+                }
+                if (UI.buttons.logout) UI.buttons.logout.style.display = 'inline-block';
             }
         } catch (error) {
             console.error("Could not load user profile", error);
-            // Don't logout here, might be a temporary network issue
         }
     }
 
@@ -432,6 +481,10 @@
     function customConfirm(msg) {
         return new Promise((resolve) => {
             const modal = document.getElementById('customConfirm');
+            if (!modal) {
+                resolve(confirm(msg)); // fallback
+                return;
+            }
             document.getElementById('confirmMsg').textContent = msg;
             modal.style.display = 'flex';
 
@@ -455,37 +508,37 @@
 
     // --- Initialization ---
     function setupEventListeners() {
-        // --- FIX STARTS HERE ---
-        // Pass direct element references to the handler for robustness.
-        UI.forms.login.addEventListener("submit", (e) => handleAuth(e, "/login", UI.displays.loginStatus, UI.inputs.loginEmail, UI.inputs.loginPassword));
-        UI.forms.register.addEventListener("submit", (e) => handleAuth(e, "/register", UI.displays.registerStatus, UI.inputs.registerEmail, UI.inputs.registerPassword));
-        // --- FIX ENDS HERE ---
-        
-        UI.buttons.save.addEventListener("click", handleSaveNote);
-        UI.buttons.goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView("register"); });
-        UI.buttons.goToLogin.addEventListener("click", (e) => { e.preventDefault(); showView("login"); });
-        UI.buttons.history.addEventListener("click", () => { fetchHistory(); showView("history"); });
-        UI.buttons.backToMain.addEventListener("click", () => showView("main"));
-        UI.buttons.logout.addEventListener("click", logout);
-        UI.buttons.cancelEdit.addEventListener("click", resetEditor);
-        UI.displays.historyList.addEventListener("click", handleHistoryListClick);
-        UI.inputs.searchNotes.addEventListener("input", (e) => renderHistory(e.target.value));
-        UI.inputs.selectAllNotes.addEventListener("change", toggleSelectAll);
-        UI.buttons.deleteSelected.addEventListener("click", () => handleDeleteNote([...state.selectedNotes]));
-        UI.buttons.connectDrive.addEventListener("click", (e) => { e.preventDefault(); startDriveConnect(); });
+        // Login & Register forms
+        UI.forms.login && UI.forms.login.addEventListener("submit", (e) => handleAuth(e, "/login", UI.displays.loginStatus, UI.inputs.loginEmail, UI.inputs.loginPassword));
+        UI.forms.register && UI.forms.register.addEventListener("submit", (e) => handleAuth(e, "/register", UI.displays.registerStatus, UI.inputs.registerEmail, UI.inputs.registerPassword));
+
+        // Note form handling (submit on form, not just click on the button)
+        UI.forms.note && UI.forms.note.addEventListener("submit", handleSaveNote);
+
+        UI.buttons.goToRegister && UI.buttons.goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView("register"); });
+        UI.buttons.goToLogin && UI.buttons.goToLogin.addEventListener("click", (e) => { e.preventDefault(); showView("login"); });
+        UI.buttons.history && UI.buttons.history.addEventListener("click", async () => { await fetchHistory(); showView("history"); });
+        UI.buttons.backToMain && UI.buttons.backToMain.addEventListener("click", () => showView("main"));
+        UI.buttons.logout && UI.buttons.logout.addEventListener("click", logout);
+        UI.buttons.cancelEdit && UI.buttons.cancelEdit.addEventListener("click", resetEditor);
+        UI.displays.historyList && UI.displays.historyList.addEventListener("click", handleHistoryListClick);
+        UI.inputs.searchNotes && UI.inputs.searchNotes.addEventListener("input", (e) => renderHistory(e.target.value));
+        UI.inputs.selectAllNotes && UI.inputs.selectAllNotes.addEventListener("change", toggleSelectAll);
+        UI.buttons.deleteSelected && UI.buttons.deleteSelected.addEventListener("click", () => handleDeleteNote([...state.selectedNotes]));
+        UI.buttons.connectDrive && UI.buttons.connectDrive.addEventListener("click", (e) => { e.preventDefault(); startDriveConnect(); });
 
         // Modal listeners
-        UI.buttons.closeViewModal.addEventListener('click', () => {
+        UI.buttons.closeViewModal && UI.buttons.closeViewModal.addEventListener('click', () => {
             UI.views.viewNoteModal.style.display = 'none';
         });
 
-        UI.views.viewNoteModal.addEventListener('click', (e) => {
+        UI.views.viewNoteModal && UI.views.viewNoteModal.addEventListener('click', (e) => {
             if (e.target === UI.views.viewNoteModal) {
                  UI.views.viewNoteModal.style.display = 'none';
             }
         });
 
-        UI.buttons.copyFromView.addEventListener('click', (e) => {
+        UI.buttons.copyFromView && UI.buttons.copyFromView.addEventListener('click', (e) => {
             const content = e.target.dataset.content;
             if (content === undefined || content === null) return;
             navigator.clipboard.writeText(content).then(() => {
@@ -500,7 +553,6 @@
         showLoader(true);
         checkOAuthRedirectFlags();
         if (state.token) {
-            UI.buttons.logout.style.display = "inline-block";
             await loadUserProfile();
             showView("main");
         } else {
