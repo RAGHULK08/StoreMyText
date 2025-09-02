@@ -11,6 +11,7 @@
 </head>
 
 <body>
+    <!-- Full-screen loader -->
     <div id="loader" class="loader-overlay" style="display: none;">
         <div class="loader"></div>
     </div>
@@ -29,55 +30,74 @@
         <section id="loginSection" class="view card">
             <h2>Login</h2>
             <form id="loginForm" novalidate>
-                <input type="email" id="loginEmail" placeholder="Email" autocomplete="username" required />
-                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password"
-                    required />
-                <button type="submit">Login</button>
+                <div class="input-group">
+                    <label for="loginEmail">Email</label>
+                    <input type="email" id="loginEmail" required autocomplete="email">
+                </div>
+                <div class="input-group">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" required autocomplete="current-password">
+                </div>
+                <div id="loginStatus" class="message" role="status"></div>
+                <button type="submit" class="btn">Login</button>
             </form>
-            <div id="loginMsg" class="message" role="status"></div>
-            <p class="form-switcher">Don't have an account? <a href="#" id="goToRegister">Register</a></p>
+            <p>Don't have an account? <a href="#" id="showRegister">Register here</a></p>
         </section>
 
-        <!-- Registration View -->
+        <!-- Register View -->
         <section id="registerSection" class="view card" style="display: none;">
             <h2>Register</h2>
             <form id="registerForm" novalidate>
-                <input type="email" id="registerEmail" placeholder="Email" autocomplete="username" required />
-                <input type="password" id="registerPassword" placeholder="Password" autocomplete="new-password"
-                    required />
-                <button type="submit">Register</button>
+                <div class="input-group">
+                    <label for="registerEmail">Email</label>
+                    <input type="email" id="registerEmail" required autocomplete="email">
+                </div>
+                <div class="input-group">
+                    <label for="registerPassword">Password</label>
+                    <input type="password" id="registerPassword" required autocomplete="new-password">
+                </div>
+                <div id="registerStatus" class="message" role="status"></div>
+                <button type="submit" class="btn">Register</button>
             </form>
-            <div id="registerMsg" class="message" role="status"></div>
-            <p class="form-switcher">Already have an account? <a href="#" id="goToLogin">Login</a></p>
+            <p>Already have an account? <a href="#" id="showLogin">Login here</a></p>
         </section>
 
-        <!-- Main Editor View -->
-        <section id="mainSection" class="view card" style="display: none;">
-            <h2>Text Editor</h2>
-            <form id="noteForm">
-                <input type="text" id="noteTitle" placeholder="Note Title (Required)" required />
-                <textarea id="textInput" placeholder="Enter your text here..."></textarea>
-                <div class="btn-row">
-                    <button type="submit" id="saveBtn">Save</button>
-                    <button type="button" id="cancelEditBtn" class="btn-secondary" style="display: none;">Cancel
-                        Edit</button>
-                    <button type="button" id="historyBtn" class="btn-secondary">View History</button>
-                </div>
-            </form>
-            <div id="status" class="message" role="status"></div>
+        <!-- Main Note Editor View -->
+        <section id="mainSection" class="view" style="display: none;">
+            <div class="card">
+                <form id="noteForm">
+                    <div class="input-group">
+                        <label for="noteTitle">Title (Optional)</label>
+                        <input type="text" id="noteTitle" placeholder="Enter a title for your note...">
+                    </div>
+                    <div class="input-group">
+                        <label for="textContent">Content</label>
+                        <textarea id="textContent" rows="10" required
+                            placeholder="Paste or type your text here..."></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <div id="mainStatus" class="message" role="status"></div>
+                        <div class="button-group">
+                            <button type="button" id="clearBtn" class="btn-secondary">Clear</button>
+                            <button type="submit" class="btn">Save Note</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="btn-row">
+                <button id="viewHistory" class="btn-secondary">View History</button>
+            </div>
         </section>
 
-        <!-- History/Notes List View -->
-        <section id="historySection" class="view view--scrollable card" style="display: none;">
-            <h2>Your Saved Notes</h2>
-            <input type="search" id="searchNotes" placeholder="Search by title or content..." />
-            <div id="bulkActions" class="bulk-actions">
-                <div class="select-all-container">
-                    <input type="checkbox" id="selectAllNotes" />
-                    <label for="selectAllNotes">Select All Visible</label>
-                </div>
-                <button id="deleteSelectedBtn" class="btn-small btn-danger" style="display: none;">Delete
-                    Selected</button>
+        <!-- History View -->
+        <section id="historySection" class="view card" style="display: none;">
+            <div class="history-header">
+                <h2>History</h2>
+                <button id="refreshHistory" class="btn-icon" title="Refresh History">&#x21bb;</button>
+            </div>
+             <div class="history-controls">
+                <input type="text" id="historySearch" placeholder="Search notes...">
+                <button id="deleteSelectedBtn" class="btn-small btn-danger" style="display: none;">Delete Selected</button>
             </div>
             <div id="historyStatus" class="message" role="status"></div>
             <div id="historyList"></div>
@@ -98,20 +118,21 @@
         </div>
     </div>
 
-<!-- Modal for Viewing Note Content -->
+    <!-- Modal for Viewing Note Content -->
     <div id="viewNoteModal" class="modal-overlay" style="display: none;">
         <div class="modal-content modal-content--large">
             <h3 id="viewNoteTitle" class="modal-title"></h3>
             <pre id="viewNoteContent" class="modal-body"></pre>
             <div class="modal-actions">
                 <button id="copyFromView" class="btn">Copy Content</button>
+                <button id="openInDriveFromView" class="btn" style="display: none;">Open in Drive</button>
+                <button id="deleteFromView" class="btn-danger">Delete</button>
                 <button id="closeViewModal" class="btn-secondary">Close</button>
             </div>
         </div>
     </div>
 
     <script src="static/script.js"></script>
+
 </body>
-
 </html>
-
