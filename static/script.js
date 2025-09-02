@@ -63,7 +63,7 @@
             connectDrive: document.getElementById("connectDriveBtn"),
             closeViewModal: document.getElementById("closeViewModal"),
             copyFromView: document.getElementById("copyFromView"),
-            downloadFromView: document.getElementById("downloadFromView") // NEW BUTTON
+            downloadFromView: document.getElementById("downloadFromView")
         }
     };
 
@@ -106,6 +106,8 @@
         state.token = null;
         state.userEmail = null;
         showView("login");
+        UI.buttons.logout.style.display = "none";
+        UI.displays.userEmail.textContent = "";
     }
 
     // --- UI & View Management ---
@@ -113,6 +115,15 @@
         Object.values(UI.views).forEach(v => v.style.display = "none");
         UI.views[viewName].style.display = viewName === "viewNoteModal" ? "flex" : "block";
         state.currentView = viewName;
+
+        // Show/hide header actions based on auth
+        if (viewName === "main" || viewName === "history" || viewName === "viewNoteModal") {
+            UI.buttons.logout.style.display = "inline-block";
+            if (state.userEmail) UI.displays.userEmail.textContent = state.userEmail;
+        } else {
+            UI.buttons.logout.style.display = "none";
+            UI.displays.userEmail.textContent = "";
+        }
     }
 
     function showLoader(show) {
@@ -276,8 +287,8 @@
         UI.displays.viewNoteContent.textContent = note.filecontent;
         UI.views.viewNoteModal.style.display = 'flex';
         UI.buttons.copyFromView.dataset.content = note.filecontent;
-        UI.buttons.downloadFromView.dataset.content = note.filecontent; // for download
-        UI.buttons.downloadFromView.dataset.title = note.title || "note"; // for download filename
+        UI.buttons.downloadFromView.dataset.content = note.filecontent;
+        UI.buttons.downloadFromView.dataset.title = note.title || "note";
         UI.views.viewNoteModal.setAttribute("aria-modal", "true");
         UI.views.viewNoteModal.setAttribute("tabindex", "-1");
         UI.buttons.closeViewModal.focus();
@@ -365,7 +376,14 @@
     // --- Google Drive Integration ---
     async function startDriveConnect() {}
 
-    async function loadUserProfile() {}
+    async function loadUserProfile() {
+        // Fill in user info if available, or you can call an API to get user profile
+        // Example: UI.displays.userEmail.textContent = "user@example.com";
+        // For demo, show token existence
+        if (state.token) {
+            UI.displays.userEmail.textContent = "Logged in";
+        }
+    }
 
     // --- Confirmation Modal ---
     function customConfirm(msg) {
