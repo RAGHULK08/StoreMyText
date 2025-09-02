@@ -42,11 +42,11 @@ JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
-
 # tell Flask about the external preferred scheme
 app.config['PREFERRED_URL_SCHEME'] = 'https'
 
-
+# Trust the proxy headers supplied by Render (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
+# This is critical so request.scheme and request.url reflect the original (https) request.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # CORS: restrict to front-end origin if provided
@@ -345,6 +345,7 @@ def google_auth_start():
 @app.route("/auth/google/callback", methods=["GET"])
 def google_auth_callback():
     logging.info(f"Callback received: request.scheme={request.scheme} request.url={request.url} headers_proto={request.headers.get('X-Forwarded-Proto')}")
+    os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
     if "error" in request.args:
         logging.error(f"Google OAuth returned error param: error={request.args.get('error')} description={request.args.get('error_description')}")
@@ -369,13 +370,9 @@ def google_auth_callback():
         redirect_uri=redirect_uri,
         state=state
     )
-    auth_response_url = request.url
-    if not auth_response_url.startswith('https'):
-        auth_response_url = auth_response_url.replace('http://', 'https://', 1)
 
     try:
-        flow.fetch_token(authorization_response=auth_response_url)
-    # ---------- FIX ENDS HERE ----------
+        flow.fetch_token(authorization_response=request.url)
     except Exception:
         logging.exception("Error fetching token from Google (fetch_token failed)")
         logging.info(f"Callback query params: {dict(request.args)}")
