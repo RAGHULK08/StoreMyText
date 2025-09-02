@@ -40,16 +40,15 @@ JWT_SECRET = os.environ.get("JWT_SECRET", FLASK_SECRET_KEY)
 JWT_ALGO = "HS256"
 JWT_EXP_DAYS = int(os.environ.get("JWT_EXP_DAYS", "7"))
 
-app = Flask(__name__)
+app = Flask(__name__, static_url_path='', static_folder='static')
 app.secret_key = FLASK_SECRET_KEY
 # tell Flask about the external preferred scheme
 app.config['PREFERRED_URL_SCHEME'] = 'https'
 
-# Trust the proxy headers supplied by Render (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
-# This is critical so request.scheme and request.url reflect the original (https) request.
+# Trust the proxy headers (if deployed behind proxy)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
-# CORS: restrict to front-end origin if provided
+# CORS: restrict to front-end origin if provided, else allow all during dev
 if FRONTEND_URL:
     CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}, supports_credentials=True)
 else:
@@ -58,10 +57,13 @@ else:
 # ---------------- DB helpers ----------------
 def get_db_connection():
     try:
+        if not DATABASE_URL:
+            logging.error("DATABASE_URL not configured")
+            return None
         conn = psycopg2.connect(DATABASE_URL)
         return conn
     except Exception as e:
-        logging.error(f"DB connection failed (postgres): {e}")
+        logging.error(f"DB connection failed: {e}")
         return None
 
 def init_db():
@@ -109,7 +111,7 @@ def init_db():
             """)
         conn.commit()
         logging.info("DB initialized / migrations applied")
-    except Exception as e:
+    except Exception:
         logging.exception("Error init DB")
     finally:
         conn.close()
@@ -147,7 +149,6 @@ def get_user_id_from_request(req):
         try:
             return int(user_sub)
         except Exception:
-            # fallback to raw string (some DB queries still accept string)
             return user_sub
     return None
 
@@ -196,7 +197,7 @@ def effective_redirect_uri():
         return REDIRECT_URI
     if BACKEND_URL:
         return BACKEND_URL.rstrip("/") + "/auth/google/callback"
-    return (request.url_root.rstrip("/") + "/auth/google/callback") if request else "/auth/google/callback"
+    return (request.url_root.rstrip("/") + "auth/google/callback") if request else "/auth/google/callback"
 
 def get_drive_service_from_creds_json(creds_json):
     if not creds_json:
