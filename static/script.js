@@ -11,8 +11,7 @@
         selectedNotes: new Set(),
         messageTimeout: null,
         userEmail: null,
-        driveLinked: false,
-        pinnedNotes: new Set(JSON.parse(localStorage.getItem("pinnedNotes") || "[]"))
+        driveLinked: false
     };
 
     // --- DOM Element Selection ---
@@ -22,8 +21,6 @@
             register: document.getElementById("registerSection"),
             main: document.getElementById("mainSection"),
             history: document.getElementById("historySection"),
-            viewNoteModal: document.getElementById("viewNoteModal"),
-            customConfirm: document.getElementById('customConfirm'),
         },
         forms: {
             login: document.getElementById("loginForm"),
@@ -36,473 +33,346 @@
             registerEmail: document.getElementById("registerEmail"),
             registerPassword: document.getElementById("registerPassword"),
             noteTitle: document.getElementById("noteTitle"),
-            textContent: document.getElementById("textContent"),
-            historySearch: document.getElementById("historySearch"),
+            textInput: document.getElementById("textInput"),
+            searchNotes: document.getElementById("searchNotes"),
+            selectAllNotes: document.getElementById("selectAllNotes"),
         },
         buttons: {
-            showRegister: document.getElementById("showRegister"),
-            showLogin: document.getElementById("showLogin"),
+            goToRegister: document.getElementById("goToRegister"),
+            goToLogin: document.getElementById("goToLogin"),
+            save: document.getElementById("saveBtn"),
+            cancelEdit: document.getElementById("cancelEditBtn"),
+            history: document.getElementById("historyBtn"),
             logout: document.getElementById("logoutBtn"),
-            viewHistory: document.getElementById("viewHistory"),
             backToMain: document.getElementById("backToMain"),
-            clear: document.getElementById("clearBtn"),
-            refreshHistory: document.getElementById("refreshHistory"),
             deleteSelected: document.getElementById("deleteSelectedBtn"),
-            connectDrive: document.getElementById("connectDriveBtn"),
-            closeViewModal: document.getElementById('closeViewModal'),
-            copyFromView: document.getElementById('copyFromView'),
-            openInDriveFromView: document.getElementById('openInDriveFromView'),
-            deleteFromView: document.getElementById('deleteFromView'),
-            confirmYes: document.getElementById('confirmYes'),
-            confirmNo: document.getElementById('confirmNo'),
+            connectDrive: document.getElementById("connectDriveBtn")
         },
-        container: {
+        displays: {
+            userEmail: document.getElementById("userEmail"),
             historyList: document.getElementById("historyList"),
             loader: document.getElementById("loader"),
         },
-        text: {
-            loginStatus: document.getElementById("loginStatus"),
-            registerStatus: document.getElementById("registerStatus"),
-            mainStatus: document.getElementById("mainStatus"),
+        messages: {
+            loginStatus: document.getElementById("loginMsg"),
+            registerStatus: document.getElementById("registerMsg"),
+            mainStatus: document.getElementById("status"),
             historyStatus: document.getElementById("historyStatus"),
-            userEmail: document.getElementById("userEmail"),
-            confirmMsg: document.getElementById('confirmMsg'),
-            viewNoteTitle: document.getElementById('viewNoteTitle'),
-            viewNoteContent: document.getElementById('viewNoteContent'),
-        }
+        },
+        modals: {
+            confirm: document.getElementById("customConfirm"),
+            confirmMsg: document.getElementById("confirmMsg"),
+            confirmYes: document.getElementById("confirmYes"),
+            confirmNo: document.getElementById("confirmNo"),
+        },
     };
 
-    // --- API Communication ---
+    // --- API Helper ---
     async function apiRequest(endpoint, method = "GET", body = null) {
-        const headers = { "Content-Type": "application/json" };
-        if (state.token) {
-            headers["Authorization"] = `Bearer ${state.token}`;
-        }
-        const options = { method, headers };
-        if (body) {
-            options.body = JSON.stringify(body);
-        }
-
+        const headers = new Headers({ "Content-Type": "application/json" });
+        if (state.token) headers.append("Authorization", `Bearer ${state.token}`);
+        const config = { method, headers, body: body ? JSON.stringify(body) : null };
         try {
-            const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
-            if (!response.ok) {
-                if (response.status === 401) {
-                    throw new Error("Unauthorized"); // Specific error for auth failure
-                }
-                const errorData = await response.json().catch(() => ({ error: "An unknown error occurred" }));
-                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            UI.displays.loader.style.display = "flex";
+            const resp = await fetch(`${API_BASE_URL}${endpoint}`, config);
+            const data = await resp.json();
+            if (!resp.ok) {
+                throw new Error(data.error || `HTTP ${resp.status}`);
             }
-            if (response.status === 204) return null;
-            return await response.json();
-        } catch (error) {
-            console.error("API Request Error:", error);
-            throw error;
+            return data;
+        } catch (err) {
+            console.error("API error", err);
+            throw err;
+        } finally {
+            UI.displays.loader.style.display = "none";
         }
     }
 
-    // --- UI & View Management ---
+    // --- UI helpers ---
     function showView(viewName) {
-        Object.values(UI.views).forEach(view => view.style.display = 'none');
+        Object.values(UI.views).forEach(v => v.style.display = "none");
         if (UI.views[viewName]) {
-            UI.views[viewName].style.display = 'block';
+            UI.views[viewName].style.display = "block";
             state.currentView = viewName;
-            if (viewName === 'history') {
-                loadHistory();
-            }
         }
     }
 
-    function showLoader(show) {
-        UI.container.loader.style.display = show ? 'flex' : 'none';
-    }
-
-    function showMessage(element, message, isError = false, duration = 3000) {
+    function showStatusMessage(element, message, type = "info", duration = 4000) {
+        if (!element) return;
+        clearTimeout(state.messageTimeout);
         element.textContent = message;
-        element.className = `message ${isError ? 'error' : 'success'}`;
-        if (state.messageTimeout) clearTimeout(state.messageTimeout);
-        if (duration > 0) {
-           state.messageTimeout = setTimeout(() => element.textContent = '', duration);
+        element.className = `message show ${type}`;
+        if (duration) {
+            state.messageTimeout = setTimeout(() => {
+                element.className = "message";
+            }, duration);
         }
     }
 
-    function showCustomConfirm(message, onConfirm) {
-        UI.text.confirmMsg.textContent = message;
-        UI.views.customConfirm.style.display = 'flex';
-
-        const confirmHandler = () => {
-            UI.views.customConfirm.style.display = 'none';
-            onConfirm();
-            UI.buttons.confirmYes.removeEventListener('click', confirmHandler);
-            UI.buttons.confirmNo.removeEventListener('click', cancelHandler);
-        };
-        const cancelHandler = () => {
-            UI.views.customConfirm.style.display = 'none';
-            UI.buttons.confirmYes.removeEventListener('click', confirmHandler);
-            UI.buttons.confirmNo.removeEventListener('click', cancelHandler);
-        };
-
-        UI.buttons.confirmYes.addEventListener('click', confirmHandler, { once: true });
-        UI.buttons.confirmNo.addEventListener('click', cancelHandler, { once: true });
+    function customConfirm(message) {
+        return new Promise(resolve => {
+            UI.modals.confirmMsg.textContent = message;
+            UI.modals.confirm.style.display = "flex";
+            const cleanup = () => {
+                UI.modals.confirm.style.display = "none";
+                UI.modals.confirmYes.onclick = null;
+                UI.modals.confirmNo.onclick = null;
+            };
+            UI.modals.confirmYes.onclick = () => { cleanup(); resolve(true); };
+            UI.modals.confirmNo.onclick = () => { cleanup(); resolve(false); };
+        });
     }
 
-    // --- Authentication ---
+    // --- Auth handlers ---
     async function handleLogin(e) {
         e.preventDefault();
-        showLoader(true);
+        const email = UI.inputs.loginEmail.value.trim();
+        const password = UI.inputs.loginPassword.value;
         try {
-            const email = UI.inputs.loginEmail.value;
-            const password = UI.inputs.loginPassword.value;
             const data = await apiRequest("/login", "POST", { email, password });
             state.token = data.token;
             localStorage.setItem("token", state.token);
-            await initializeApp();
-        } catch (error) {
-            showMessage(UI.text.loginStatus, error.message, true);
-        } finally {
-            showLoader(false);
+            await loadUserProfile();
+            initializeApp();
+            showStatusMessage(UI.messages.loginStatus, "Logged in", "success");
+        } catch (err) {
+            showStatusMessage(UI.messages.loginStatus, err.message || "Login failed", "error");
         }
     }
 
     async function handleRegister(e) {
         e.preventDefault();
-        showLoader(true);
+        const email = UI.inputs.registerEmail.value.trim();
+        const password = UI.inputs.registerPassword.value;
         try {
-            const email = UI.inputs.registerEmail.value;
-            const password = UI.inputs.registerPassword.value;
             const data = await apiRequest("/register", "POST", { email, password });
-            showMessage(UI.text.registerStatus, data.message, false);
-            UI.forms.register.reset();
-            setTimeout(() => showView('login'), 1500);
-        } catch (error) {
-            showMessage(UI.text.registerStatus, error.message, true);
-        } finally {
-            showLoader(false);
+            // auto-login token returned
+            if (data.token) {
+                state.token = data.token;
+                localStorage.setItem("token", state.token);
+                await loadUserProfile();
+                initializeApp();
+            } else {
+                showStatusMessage(UI.messages.registerStatus, "Registered. Please log in.", "success");
+                showView("login");
+            }
+        } catch (err) {
+            showStatusMessage(UI.messages.registerStatus, err.message || "Register failed", "error");
         }
     }
 
-    function handleLogout() {
-        localStorage.removeItem("token");
-        localStorage.removeItem("pinnedNotes");
+    function logout() {
         state.token = null;
+        localStorage.removeItem("token");
         state.userEmail = null;
-        state.pinnedNotes.clear();
-        UI.text.userEmail.textContent = "";
-        UI.buttons.logout.style.display = "none";
+        state.driveLinked = false;
         UI.buttons.connectDrive.style.display = "none";
+        UI.buttons.logout.style.display = "none";
+        UI.displays.userEmail.textContent = "";
         showView("login");
     }
-    
-    // --- Note Management ---
-    async function handleSaveNote(e) {
+
+    async function loadUserProfile() {
+        if (!state.token) return;
+        try {
+            const me = await apiRequest("/me");
+            state.userEmail = me.email;
+            state.driveLinked = !!me.drive_linked;
+            UI.displays.userEmail.textContent = me.email;
+            UI.buttons.logout.style.display = "inline-block";
+            UI.buttons.connectDrive.style.display = state.driveLinked ? "none" : "inline-block";
+        } catch (err) {
+            console.warn("Could not load /me", err);
+        }
+    }
+
+    // --- Drive connect flow ---
+    async function startDriveConnect() {
+        try {
+            const r = await apiRequest("/auth/google/start");
+            if (r && r.auth_url) {
+                // Navigate browser to the auth url. Google will redirect back to server callback which will
+                // redirect to FRONTEND_URL with google_link_success=1 or google_link_error=1.
+                // The server requires the Authorization header on the callback to associate creds with the user.
+                // Browsers don't send Authorization header on 3rd-party redirect, so we do the redirect via fetch:
+                // First open a small POST to callback URL with Authorization so that server has the token in request headers.
+                // But since the callback is done by Google we cannot attach header there. Therefore the recommended approach:
+                // 1. Open the auth_url in the browser (user consents)
+                // 2. After redirect completes, the server will still not have the Authorization header.
+                // To ensure linking, after redirect success the frontend should call a small endpoint to fetch fresh /me (server saved creds if it had the user info).
+                // Simpler approach: open auth_url in a new tab/window.
+                window.location.href = r.auth_url;
+            } else {
+                showStatusMessage(UI.messages.mainStatus, "Could not start Google auth", "error");
+            }
+        } catch (err) {
+            showStatusMessage(UI.messages.mainStatus, err.message || "Could not start Drive connect", "error");
+        }
+    }
+
+    // Check URL for google_link_success/google_link_error params (after redirect flow)
+    function checkOAuthRedirectFlags() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("google_link_success")) {
+            // user probably linked; re-fetch profile
+            const current = window.location.href.split("?")[0];
+            history.replaceState({}, "", current); // remove query params
+            loadUserProfile().then(() => {
+                showStatusMessage(UI.messages.mainStatus, "Google Drive linked successfully!", "success");
+                UI.buttons.connectDrive.style.display = "none";
+            });
+        } else if (params.get("google_link_error")) {
+            const current = window.location.href.split("?")[0];
+            history.replaceState({}, "", current);
+            showStatusMessage(UI.messages.mainStatus, "Google Drive linking failed.", "error");
+        }
+    }
+
+    // --- Notes ---
+    function handleSaveNote(e) {
         e.preventDefault();
-        const content = UI.inputs.textContent.value.trim();
-        if (!content) {
-            showMessage(UI.text.mainStatus, "Content cannot be empty.", true);
-            return;
-        }
-        showLoader(true);
         const title = UI.inputs.noteTitle.value.trim();
-        const endpoint = state.editingFilename ? `/save/${state.editingFilename}` : "/save";
-        try {
-            const data = await apiRequest(endpoint, "POST", { content, title });
-            showMessage(UI.text.mainStatus, data.message, false);
-            UI.forms.note.reset();
-            state.editingFilename = null;
-        } catch (error) {
-            if (error.message === "Unauthorized") {
-                handleLogout();
-                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
-            } else {
-                showMessage(UI.text.mainStatus, error.message, true);
-            }
-        } finally {
-            showLoader(false);
-        }
-    }
-
-    async function loadHistory() {
-        showLoader(true);
-        try {
-            const data = await apiRequest("/history");
-            state.notesCache = data.notes;
-            renderHistory();
-        } catch (error) {
-            if (error.message === "Unauthorized") {
-                handleLogout();
-                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
-            } else {
-                showMessage(UI.text.historyStatus, "Failed to load history.", true);
-            }
-        } finally {
-            showLoader(false);
-        }
-    }
-
-    async function deleteNotes(filenames) {
-        showLoader(true);
-        try {
-            const data = await apiRequest("/delete", "POST", { filenames });
-            showMessage(UI.text.historyStatus, data.message, false);
-            state.selectedNotes.clear();
-            loadHistory();
-        } catch (error) {
-            if (error.message === "Unauthorized") {
-                handleLogout();
-                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
-            } else {
-                showMessage(UI.text.historyStatus, error.message, true);
-            }
-        } finally {
-            showLoader(false);
-        }
-    }
-    
-    // --- History View Rendering & Events ---
-    function renderHistory() {
-        const searchTerm = UI.inputs.historySearch.value.toLowerCase();
-        const filteredNotes = state.notesCache.filter(note =>
-            (note.title && note.title.toLowerCase().includes(searchTerm)) ||
-            note.content.toLowerCase().includes(searchTerm) ||
-            note.filename.toLowerCase().includes(searchTerm)
-        );
-
-        // Sort notes: pinned first, then by date descending
-        filteredNotes.sort((a, b) => {
-            const aIsPinned = state.pinnedNotes.has(a.filename);
-            const bIsPinned = state.pinnedNotes.has(b.filename);
-            if (aIsPinned && !bIsPinned) return -1;
-            if (!aIsPinned && bIsPinned) return 1;
-            return new Date(b.timestamp) - new Date(a.timestamp);
-        });
-
-        UI.container.historyList.innerHTML = '';
-        if (filteredNotes.length === 0) {
-            UI.container.historyList.innerHTML = '<p>No notes found.</p>';
+        if (!title) {
+            showStatusMessage(UI.messages.mainStatus, "Title is required.", "error");
             return;
         }
-
-        filteredNotes.forEach(note => {
-            const item = createHistoryItem(note);
-            UI.container.historyList.appendChild(item);
-        });
-        updateDeleteSelectedButton();
+        const content = UI.inputs.textInput.value;
+        apiRequest("/save", "POST", { filename: state.editingFilename, title, content })
+            .then(data => {
+                showStatusMessage(UI.messages.mainStatus, data.message || "Saved", "success");
+                resetEditor();
+            })
+            .catch(err => showStatusMessage(UI.messages.mainStatus, err.message || "Save failed", "error"));
     }
-    
-    function createHistoryItem(note) {
-        const item = document.createElement('div');
-        item.className = 'history-item';
-        item.dataset.filename = note.filename;
-        if (state.selectedNotes.has(note.filename)) {
-            item.classList.add('selected');
+
+    function resetEditor() {
+        state.editingFilename = null;
+        UI.forms.note.reset();
+        UI.buttons.cancelEdit.style.display = "none";
+        UI.inputs.noteTitle.focus();
+    }
+
+    async function fetchHistory() {
+        try {
+            const notes = await apiRequest("/history");
+            state.notesCache = notes;
+            renderHistory();
+        } catch (err) {
+            showStatusMessage(UI.messages.historyStatus, err.message || "Failed", "error", null);
         }
+    }
 
-        const isPinned = state.pinnedNotes.has(note.filename);
+    function renderHistory(filter = "") {
+        const filtered = state.notesCache.filter(note =>
+            note.title.toLowerCase().includes(filter) ||
+            (note.filecontent || "").toLowerCase().includes(filter)
+        );
+        if (!filtered.length) {
+            UI.displays.historyList.innerHTML = "<p>No notes found.</p>";
+            return;
+        }
+        UI.displays.historyList.innerHTML = filtered.map(note => `
+            <div class="history-item" data-filename="${note.filename}">
+                <input type="checkbox" class="note-select-checkbox" data-filename="${note.filename}" />
+                <div class="history-item-content">
+                    <p>${escapeHTML(note.title)}</p>
+                    <small>Last updated: ${new Date(note.updated_at).toLocaleString()}</small>
+                    ${note.drive_file_id ? `<div><a target="_blank" rel="noopener noreferrer" href="https://drive.google.com/file/d/${note.drive_file_id}/view">Open in Drive</a></div>` : ""}
+                </div>
+                <div class="history-item-actions">
+                    <button class="edit-btn" title="Edit Note" data-filename="${note.filename}">✏️</button>
+                    <button class="delete-btn" title="Delete Note" data-filename="${note.filename}">🗑️</button>
+                </div>
+            </div>
+        `).join("");
+        updateBulkActionUI();
+    }
 
-        item.innerHTML = `
-            <input type="checkbox" class="history-item-checkbox" ${state.selectedNotes.has(note.filename) ? 'checked' : ''}>
-            <div class="history-item-content">
-                <div class="history-item-title">${note.title || note.filename}</div>
-                <div class="history-item-meta">${new Date(note.timestamp).toLocaleString()}</div>
-            </div>
-            <div class="history-item-actions">
-                <button class="btn-icon btn-pin-note ${isPinned ? 'pinned' : ''}" title="${isPinned ? 'Unpin' : 'Pin'} note">&#x1f4cc;</button>
-                <button class="btn-small btn-view-note">View</button>
-                ${note.drive_file_id ? `<a href="https://docs.google.com/document/d/${note.drive_file_id}" target="_blank" class="btn-small btn-secondary">Open in Drive</a>` : ''}
-                <button class="btn-small btn-danger btn-delete-note">Delete</button>
-            </div>
-        `;
-        return item;
+    function escapeHTML(str) {
+        return (str || "").replace(/[&<>"']/g, function (m) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+        });
     }
 
     function handleHistoryListClick(e) {
         const target = e.target;
-        const item = target.closest('.history-item');
-        if (!item) return;
+        const filename = target.closest(".history-item")?.dataset.filename;
+        if (!filename) return;
+        if (target.classList.contains("delete-btn")) {
+            handleDeleteNote([filename]);
+        } else if (target.classList.contains("edit-btn")) {
+            handleEditNote(filename);
+        } else if (target.classList.contains("note-select-checkbox")) {
+            toggleNoteSelection(filename, target.checked);
+        } else if (target.closest(".history-item-content")) {
+            handleEditNote(filename);
+        }
+    }
 
-        const filename = item.dataset.filename;
+    async function handleDeleteNote(filenames) {
+        const confirmed = await customConfirm(`Delete ${filenames.length} note(s)?`);
+        if (!confirmed) return;
+        apiRequest("/delete", "POST", { filenames })
+            .then(data => {
+                showStatusMessage(UI.messages.historyStatus, data.message || "Deleted", "success");
+                state.selectedNotes.clear();
+                fetchHistory();
+            })
+            .catch(err => showStatusMessage(UI.messages.historyStatus, err.message || "Delete failed", "error"));
+    }
+
+    function handleEditNote(filename) {
         const note = state.notesCache.find(n => n.filename === filename);
         if (!note) return;
-        
-        if (target.type === 'checkbox') {
-            toggleNoteSelection(filename);
-        } else if (target.classList.contains('btn-pin-note')) {
-            togglePinNote(filename, target);
-        } else if (target.classList.contains('btn-view-note')) {
-            handleViewClick(note);
-        } else if (target.classList.contains('btn-delete-note')) {
-            showCustomConfirm(`Are you sure you want to delete "${note.title || filename}"? This may also remove it from Google Drive.`, () => {
-                deleteNotes([filename]);
-            });
-        }
-    }
-    
-    function handleViewClick(note) {
-        UI.text.viewNoteTitle.textContent = note.title || 'View Note';
-        UI.text.viewNoteContent.textContent = note.content;
-        UI.buttons.copyFromView.dataset.content = note.content;
-        UI.buttons.deleteFromView.dataset.filename = note.filename;
-
-        if (note.drive_file_id) {
-            UI.buttons.openInDriveFromView.style.display = 'inline-block';
-            UI.buttons.openInDriveFromView.dataset.driveId = note.drive_file_id;
-        } else {
-            UI.buttons.openInDriveFromView.style.display = 'none';
-        }
-        UI.views.viewNoteModal.style.display = 'flex';
+        state.editingFilename = filename;
+        UI.inputs.noteTitle.value = note.title;
+        UI.inputs.textInput.value = note.filecontent || "";
+        UI.buttons.cancelEdit.style.display = "inline-block";
+        showView("main");
     }
 
-
-    function toggleNoteSelection(filename) {
-        const item = UI.container.historyList.querySelector(`[data-filename="${filename}"]`);
-        if (state.selectedNotes.has(filename)) {
-            state.selectedNotes.delete(filename);
-            item.classList.remove('selected');
-        } else {
-            state.selectedNotes.add(filename);
-            item.classList.add('selected');
-        }
-        updateDeleteSelectedButton();
+    // bulk select helpers
+    function toggleNoteSelection(filename, checked) {
+        if (checked) state.selectedNotes.add(filename);
+        else state.selectedNotes.delete(filename);
+        updateBulkActionUI();
+    }
+    function toggleSelectAll() {
+        const checked = UI.inputs.selectAllNotes.checked;
+        const checkboxes = document.querySelectorAll(".note-select-checkbox");
+        checkboxes.forEach(cb => { cb.checked = checked; const fn = cb.dataset.filename; if (checked) state.selectedNotes.add(fn); else state.selectedNotes.delete(fn); });
+        updateBulkActionUI();
+    }
+    function updateBulkActionUI() {
+        const has = state.selectedNotes.size > 0;
+        UI.buttons.deleteSelected.style.display = has ? "block" : "none";
+        const allBoxes = [...document.querySelectorAll(".note-select-checkbox")];
+        const allSelected = allBoxes.length > 0 && allBoxes.every(cb => cb.checked);
+        UI.inputs.selectAllNotes.checked = allSelected;
     }
 
-    function updateDeleteSelectedButton() {
-        UI.buttons.deleteSelected.style.display = state.selectedNotes.size > 0 ? 'inline-block' : 'none';
-    }
-
-    function togglePinNote(filename, button) {
-        if (state.pinnedNotes.has(filename)) {
-            state.pinnedNotes.delete(filename);
-            button.classList.remove('pinned');
-            button.title = 'Pin note';
-        } else {
-            state.pinnedNotes.add(filename);
-            button.classList.add('pinned');
-            button.title = 'Unpin note';
-        }
-        localStorage.setItem("pinnedNotes", JSON.stringify(Array.from(state.pinnedNotes)));
-        renderHistory();
-    }
-    
-    // --- Google Drive Integration ---
-    async function loadUserProfile() {
-        try {
-            const profile = await apiRequest("/profile");
-            state.userEmail = profile.email;
-            state.driveLinked = profile.drive_linked;
-            UI.text.userEmail.textContent = state.userEmail;
-            UI.buttons.connectDrive.textContent = state.driveLinked ? "Drive Connected" : "Connect Drive";
-            UI.buttons.connectDrive.disabled = state.driveLinked;
-            UI.buttons.connectDrive.style.display = "inline-block";
-        } catch (error) {
-            console.error("Failed to load profile:", error);
-            handleLogout();
-            if (error.message === "Unauthorized") {
-                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
-            }
-        }
-    }
-
-    async function startDriveConnect() {
-        try {
-            const data = await apiRequest("/connect_drive");
-            if (data.auth_url) {
-                window.location.href = data.auth_url;
-            }
-        } catch (error) {
-            if (error.message === "Unauthorized") {
-                handleLogout();
-                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
-            } else {
-                showMessage(UI.text.mainStatus, "Failed to start Drive connection.", true);
-            }
-        }
-    }
-
-    function checkOAuthRedirectFlags() {
-        const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.has('oauth_success')) {
-            showMessage(UI.text.mainStatus, "Google Drive connected successfully!", false);
-            history.replaceState(null, '', window.location.pathname);
-        } else if (urlParams.has('oauth_error')) {
-            const errorMsg = urlParams.get('oauth_error') || "Unknown error during Google Drive connection.";
-            showMessage(UI.text.mainStatus, `Drive connection failed: ${errorMsg}`, true);
-            history.replaceState(null, '', window.location.pathname);
-        }
-    }
-
-    // --- Event Listeners Setup ---
+    // --- Event wiring & init ---
     function setupEventListeners() {
-        // Form submissions
         UI.forms.login.addEventListener("submit", handleLogin);
         UI.forms.register.addEventListener("submit", handleRegister);
         UI.forms.note.addEventListener("submit", handleSaveNote);
 
-        // View switching
-        UI.buttons.showRegister.addEventListener("click", (e) => { e.preventDefault(); showView('register'); });
-        UI.buttons.showLogin.addEventListener("click", (e) => { e.preventDefault(); showView('login'); });
-        UI.buttons.viewHistory.addEventListener("click", () => showView('history'));
-        UI.buttons.backToMain.addEventListener("click", () => showView('main'));
-        
-        // Actions
-        UI.buttons.logout.addEventListener("click", handleLogout);
-        UI.buttons.clear.addEventListener("click", () => {
-            UI.forms.note.reset();
-            state.editingFilename = null;
-        });
-        UI.buttons.refreshHistory.addEventListener("click", loadHistory);
-        UI.buttons.deleteSelected.addEventListener("click", () => {
-            if (state.selectedNotes.size === 0) return;
-            showCustomConfirm(`Are you sure you want to delete ${state.selectedNotes.size} selected notes?`, () => {
-                deleteNotes(Array.from(state.selectedNotes));
-            });
-        });
+        UI.buttons.goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView("register"); });
+        UI.buttons.goToLogin.addEventListener("click", (e) => { e.preventDefault(); showView("login"); });
+        UI.buttons.history.addEventListener("click", () => { fetchHistory(); showView("history"); });
+        UI.buttons.backToMain.addEventListener("click", () => showView("main"));
+        UI.buttons.logout.addEventListener("click", logout);
+        UI.buttons.cancelEdit.addEventListener("click", resetEditor);
 
-        // History list interactions (delegated)
-        UI.container.historyList.addEventListener('click', handleHistoryListClick);
-        UI.inputs.historySearch.addEventListener('input', renderHistory);
-        
-        // Drive connection
+        UI.displays.historyList.addEventListener("click", handleHistoryListClick);
+        UI.inputs.searchNotes.addEventListener("input", (e) => renderHistory(e.target.value.toLowerCase()));
+        UI.inputs.selectAllNotes.addEventListener("change", toggleSelectAll);
+        UI.buttons.deleteSelected.addEventListener("click", () => handleDeleteNote([...state.selectedNotes]));
+
         UI.buttons.connectDrive.addEventListener("click", (e) => { e.preventDefault(); startDriveConnect(); });
-
-        // Modal listeners
-        UI.buttons.closeViewModal.addEventListener('click', () => UI.views.viewNoteModal.style.display = 'none');
-        UI.views.viewNoteModal.addEventListener('click', (e) => {
-            if (e.target === UI.views.viewNoteModal) UI.views.viewNoteModal.style.display = 'none';
-        });
-
-        UI.buttons.copyFromView.addEventListener('click', (e) => {
-            navigator.clipboard.writeText(e.target.dataset.content).then(() => {
-                const originalText = e.target.textContent;
-                e.target.textContent = 'Copied!';
-                setTimeout(() => { e.target.textContent = originalText; }, 1500);
-            }).catch(err => console.error("Failed to copy from modal: ", err));
-        });
-        
-        UI.buttons.deleteFromView.addEventListener('click', (e) => {
-            const filename = e.target.dataset.filename;
-            if (!filename) return;
-            UI.views.viewNoteModal.style.display = 'none';
-            const note = state.notesCache.find(n => n.filename === filename);
-            showCustomConfirm(`Are you sure you want to delete "${note.title || filename}"?`, () => {
-                deleteNotes([filename]);
-            });
-        });
-
-        UI.buttons.openInDriveFromView.addEventListener('click', (e) => {
-            const driveId = e.target.dataset.driveId;
-            if (driveId) {
-                window.open(`https://docs.google.com/document/d/${driveId}`, '_blank');
-            }
-        });
-
-        // Custom confirm no button
-        UI.buttons.confirmNo.addEventListener('click', () => {
-             UI.views.customConfirm.style.display = 'none';
-        });
     }
 
-    // --- App Initialization ---
     async function initializeApp() {
-        showLoader(true);
         checkOAuthRedirectFlags();
         if (state.token) {
             UI.buttons.logout.style.display = "inline-block";
@@ -511,12 +381,10 @@
         } else {
             showView("login");
         }
-        showLoader(false);
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener("DOMContentLoaded", () => {
         setupEventListeners();
         initializeApp();
     });
-
 })();
