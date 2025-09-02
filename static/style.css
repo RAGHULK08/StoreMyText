@@ -373,6 +373,133 @@ button:disabled {
     100% { transform: rotate(360deg); }
 }
 
+.history-item {
+    background-color: var(--white);
+    border-radius: var(--border-radius-md);
+    padding: 1rem 1.5rem;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-color);
+    transition: all 0.2s ease-in-out;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+}
+
+.history-item.pinned {
+    background-color: #fffbeb;
+    border-left: 4px solid #facc15;
+}
+
+.history-item:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+    cursor: pointer;
+}
+
+.note-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.note-title {
+    font-size: 1.1rem;
+    color: var(--text-primary);
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.note-meta {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+}
+
+.drive-icon {
+    font-size: 1.2em;
+    filter: grayscale(30%);
+}
+
+.note-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.btn-icon {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.5rem;
+    border-radius: 50%;
+    font-size: 1.3rem;
+    line-height: 1;
+    color: var(--text-secondary);
+    transition: background-color 0.2s, color 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon:hover {
+    background-color: var(--light-bg);
+    color: var(--text-primary);
+}
+
+.btn-icon.pinned {
+    color: #f97316;
+}
+
+/* ... existing code ... */
+.modal-content {
+/* ... existing code ... */
+    width: 90%;
+    max-width: 400px;
+    text-align: center;
+}
+
+.modal-content--large {
+    max-width: 800px;
+    text-align: left;
+}
+
+.modal-title {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    font-size: 1.5rem;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.75rem;
+}
+
+.modal-body {
+    margin-bottom: 1.5rem;
+    max-height: 60vh;
+    overflow-y: auto;
+    background-color: var(--light-bg);
+    padding: 1rem;
+    border-radius: var(--border-radius-sm);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+
+.modal-content p {
+    margin-bottom: 1.5rem;
+    font-size: 1.1rem;
+}
+
 /* --- Responsive Design --- */
 @media (max-width: 768px) {
     body { font-size: 15px; }
