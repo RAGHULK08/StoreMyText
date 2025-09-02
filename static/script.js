@@ -94,10 +94,10 @@
     }
 
     // --- Authentication ---
-    async function handleAuth(e, endpoint, statusEl) {
+    async function handleAuth(e, endpoint, statusEl, emailInput, passwordInput) {
         e.preventDefault();
-        const email = e.target.email.value;
-        const password = e.target.password.value;
+        const email = emailInput.value;
+        const password = passwordInput.value;
         if (!email || !password) {
             showMessage(statusEl, "Email and password are required.", "error");
             return;
@@ -159,6 +159,7 @@
     }
 
     function escapeHTML(str) {
+        if (!str) return "";
         return str.replace(/[&<>"']/g, (match) => {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[match];
         });
@@ -234,9 +235,10 @@
 
     function renderHistory(searchTerm = "") {
         const list = UI.displays.historyList;
+        const lowerCaseSearchTerm = searchTerm.toLowerCase();
         const notesToRender = state.notesCache.filter(note =>
-            (note.title && note.title.toLowerCase().includes(searchTerm)) ||
-            (note.filecontent && note.filecontent.toLowerCase().includes(searchTerm))
+            (note.title && note.title.toLowerCase().includes(lowerCaseSearchTerm)) ||
+            (note.filecontent && note.filecontent.toLowerCase().includes(lowerCaseSearchTerm))
         );
 
         notesToRender.sort((a, b) => {
@@ -317,7 +319,7 @@
         navigator.clipboard.writeText(note.filecontent).then(() => {
             const originalText = button.innerHTML;
             button.innerHTML = '✅';
-            setTimeout(() => { button.innerHTML = originalText; }, 1500);
+            setTimeout(() => { button.innerHTML = "📋"; }, 1500);
         }).catch(err => {
             console.error("Failed to copy text: ", err);
             showMessage(UI.displays.historyStatus, 'Failed to copy text.', 'error');
@@ -331,7 +333,7 @@
             state.pinnedNotes.add(filename);
         }
         localStorage.setItem("pinnedNotes", JSON.stringify([...state.pinnedNotes]));
-        renderHistory(UI.inputs.searchNotes.value.toLowerCase());
+        renderHistory(UI.inputs.searchNotes.value);
     }
 
     function editNote(note) {
@@ -353,7 +355,8 @@
 
     // --- Bulk Actions & Selection ---
     function toggleNoteSelection(filename) {
-        const checkbox = document.querySelector(`.note-select[data-filename="${filename}"]`);
+        const checkbox = document.querySelector(`.note-select[data-filename="${escapeHTML(filename)}"]`);
+        if (!checkbox) return;
         const item = checkbox.closest('.history-item');
         if (state.selectedNotes.has(filename)) {
             state.selectedNotes.delete(filename);
@@ -386,11 +389,9 @@
 
     function updateBulkActionUI() {
         const count = state.selectedNotes.size;
+        UI.buttons.deleteSelected.style.display = count > 0 ? 'inline-block' : 'none';
         if (count > 0) {
             UI.buttons.deleteSelected.textContent = `Delete (${count})`;
-            UI.buttons.deleteSelected.style.display = 'inline-block';
-        } else {
-            UI.buttons.deleteSelected.style.display = 'none';
         }
         UI.inputs.selectAllNotes.checked = (count > 0 && count === document.querySelectorAll('#historyList .note-select').length);
     }
@@ -423,6 +424,7 @@
             }
         } catch (error) {
             console.error("Could not load user profile", error);
+            // Don't logout here, might be a temporary network issue
         }
     }
 
@@ -438,20 +440,27 @@
 
             const cleanup = (result) => {
                 modal.style.display = 'none';
-                yesBtn.replaceWith(yesBtn.cloneNode(true));
-                noBtn.replaceWith(noBtn.cloneNode(true));
+                yesBtn.removeEventListener('click', yesHandler);
+                noBtn.removeEventListener('click', noHandler);
                 resolve(result);
             };
 
-            yesBtn.addEventListener('click', () => cleanup(true), { once: true });
-            noBtn.addEventListener('click', () => cleanup(false), { once: true });
+            const yesHandler = () => cleanup(true);
+            const noHandler = () => cleanup(false);
+
+            yesBtn.addEventListener('click', yesHandler, { once: true });
+            noBtn.addEventListener('click', noHandler, { once: true });
         });
     }
 
     // --- Initialization ---
     function setupEventListeners() {
-        UI.forms.login.addEventListener("submit", (e) => handleAuth(e, "/login", UI.displays.loginStatus));
-        UI.forms.register.addEventListener("submit", (e) => handleAuth(e, "/register", UI.displays.registerStatus));
+        // --- FIX STARTS HERE ---
+        // Pass direct element references to the handler for robustness.
+        UI.forms.login.addEventListener("submit", (e) => handleAuth(e, "/login", UI.displays.loginStatus, UI.inputs.loginEmail, UI.inputs.loginPassword));
+        UI.forms.register.addEventListener("submit", (e) => handleAuth(e, "/register", UI.displays.registerStatus, UI.inputs.registerEmail, UI.inputs.registerPassword));
+        // --- FIX ENDS HERE ---
+        
         UI.buttons.save.addEventListener("click", handleSaveNote);
         UI.buttons.goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView("register"); });
         UI.buttons.goToLogin.addEventListener("click", (e) => { e.preventDefault(); showView("login"); });
@@ -460,7 +469,7 @@
         UI.buttons.logout.addEventListener("click", logout);
         UI.buttons.cancelEdit.addEventListener("click", resetEditor);
         UI.displays.historyList.addEventListener("click", handleHistoryListClick);
-        UI.inputs.searchNotes.addEventListener("input", (e) => renderHistory(e.target.value.toLowerCase()));
+        UI.inputs.searchNotes.addEventListener("input", (e) => renderHistory(e.target.value));
         UI.inputs.selectAllNotes.addEventListener("change", toggleSelectAll);
         UI.buttons.deleteSelected.addEventListener("click", () => handleDeleteNote([...state.selectedNotes]));
         UI.buttons.connectDrive.addEventListener("click", (e) => { e.preventDefault(); startDriveConnect(); });
@@ -470,9 +479,15 @@
             UI.views.viewNoteModal.style.display = 'none';
         });
 
+        UI.views.viewNoteModal.addEventListener('click', (e) => {
+            if (e.target === UI.views.viewNoteModal) {
+                 UI.views.viewNoteModal.style.display = 'none';
+            }
+        });
+
         UI.buttons.copyFromView.addEventListener('click', (e) => {
             const content = e.target.dataset.content;
-            if (!content) return;
+            if (content === undefined || content === null) return;
             navigator.clipboard.writeText(content).then(() => {
                 const originalText = e.target.textContent;
                 e.target.textContent = 'Copied!';
@@ -482,6 +497,7 @@
     }
 
     async function initializeApp() {
+        showLoader(true);
         checkOAuthRedirectFlags();
         if (state.token) {
             UI.buttons.logout.style.display = "inline-block";
@@ -490,6 +506,7 @@
         } else {
             showView("login");
         }
+        showLoader(false);
     }
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -497,3 +514,4 @@
         initializeApp();
     });
 })();
+
