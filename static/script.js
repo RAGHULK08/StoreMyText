@@ -62,60 +62,42 @@
             deleteSelected: document.getElementById("deleteSelectedBtn"),
             connectDrive: document.getElementById("connectDriveBtn"),
             closeViewModal: document.getElementById("closeViewModal"),
-            copyFromView: document.getElementById("copyFromView")
+            copyFromView: document.getElementById("copyFromView"),
+            downloadFromView: document.getElementById("downloadFromView") // NEW BUTTON
         }
     };
 
     // --- API Communication ---
     async function apiRequest(endpoint, method = "GET", body = null) {
-        const options = {
-            method: method,
-            headers: { "Authorization": `Bearer ${state.token}` }
-        };
-        if (body) {
-            options.headers["Content-Type"] = "application/json";
-            options.body = JSON.stringify(body);
-        }
-        try {
-            const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
-            if (response.status === 401) {
-                logout();
-                return null;
-            }
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ error: "An unknown error occurred" }));
-                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-            }
-            return response.status === 204 ? {} : await response.json();
-        } catch (error) {
-            console.error("API Request Error:", error);
-            throw error;
-        }
+        const headers = { "Content-Type": "application/json" };
+        if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
+        const res = await fetch(API_BASE_URL + endpoint, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return await res.json();
     }
 
     // --- Authentication ---
     async function handleAuth(e, endpoint, statusEl, emailInput, passwordInput) {
         e.preventDefault();
-        const email = emailInput.value.trim();
-        const password = passwordInput.value;
-        if (!email || !password) {
-            showMessage(statusEl, "Email and password are required.", "error");
-            return;
-        }
-        showLoader(true);
+        statusEl.textContent = "";
         try {
-            const data = await apiRequest(endpoint, "POST", { email, password });
-            if (data && data.token) {
-                state.token = data.token;
+            const payload = { email: emailInput.value.trim(), password: passwordInput.value.trim() };
+            const data = await apiRequest(endpoint, "POST", payload);
+            if (endpoint === "/login") {
                 localStorage.setItem("token", data.token);
-                await initializeApp();
+                state.token = data.token;
+                showView("main");
+                loadUserProfile();
             } else {
-                showMessage(statusEl, data.error || "Authentication failed.", "error");
+                statusEl.textContent = "Registered successfully. Please login.";
+                showView("login");
             }
         } catch (error) {
-            showMessage(statusEl, error.message, "error");
-        } finally {
-            showLoader(false);
+            statusEl.textContent = error.message;
         }
     }
 
@@ -123,59 +105,43 @@
         localStorage.removeItem("token");
         state.token = null;
         state.userEmail = null;
-        state.driveLinked = false;
-        UI.displays.userEmail.textContent = "";
-        UI.buttons.logout.style.display = "none";
-        UI.buttons.connectDrive.style.display = "none";
         showView("login");
     }
 
     // --- UI & View Management ---
     function showView(viewName) {
+        Object.values(UI.views).forEach(v => v.style.display = "none");
+        UI.views[viewName].style.display = viewName === "viewNoteModal" ? "flex" : "block";
         state.currentView = viewName;
-        for (const key in UI.views) {
-            UI.views[key].style.display = key === viewName ? "block" : "none";
-        }
-        if (viewName === "main") {
-            UI.inputs.textInput.focus();
-        }
     }
 
     function showLoader(show) {
-        document.getElementById("loader").style.display = show ? "flex" : "none";
+        document.body.classList.toggle("loading", !!show);
     }
 
     function showMessage(element, message, type = "info", duration = 4000) {
-        if (!element) return;
         element.textContent = message;
         element.className = `message ${type}`;
-        element.style.opacity = "1";
-        element.style.display = "block";
-        clearTimeout(state.messageTimeout);
         if (duration > 0) {
+            clearTimeout(state.messageTimeout);
             state.messageTimeout = setTimeout(() => {
-                element.style.opacity = "0";
+                element.textContent = "";
+                element.className = "message";
             }, duration);
         }
     }
 
     function escapeHTML(str) {
-        if (!str) return "";
-        return str.replace(/[&<>"']/g, (match) => {
-            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[match];
-        });
+        return str.replace(/[&<>"']/g, m => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        })[m]);
     }
 
-    function checkOAuthRedirectFlags() {
-        const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.has('google_link_success')) {
-            showMessage(UI.displays.mainStatus, 'Google Drive linked successfully!', 'success');
-            history.replaceState(null, '', window.location.pathname); // Clean URL
-        } else if (urlParams.has('google_link_error')) {
-            showMessage(UI.displays.mainStatus, 'Failed to link Google Drive.', 'error');
-            history.replaceState(null, '', window.location.pathname); // Clean URL
-        }
-    }
+    function checkOAuthRedirectFlags() {}
 
     // --- Note Management ---
     async function handleSaveNote(e) {
@@ -274,7 +240,7 @@
                 </div>
                 <div class="note-actions">
                     <button class="btn-icon view-btn" data-filename="${escapeHTML(note.filename)}" title="View Note" aria-label="View Note">👁️</button>
-                    <button class="btn-icon copy-btn" data-filename="${escapeHTML(note.filename)}" title="Copy Content" aria-label="Copy Content">📋</button>
+                    <button class="btn-icon delete-btn" data-filename="${escapeHTML(note.filename)}" title="Delete Note" aria-label="Delete Note">🗑️</button>
                     <button class="btn-icon pin-btn ${pinClass}" data-filename="${escapeHTML(note.filename)}" title="${isPinned ? 'Unpin Note' : 'Pin Note'}" aria-label="${isPinned ? 'Unpin Note' : 'Pin Note'}">${pinIcon}</button>
                 </div>
             </div>`;
@@ -293,8 +259,8 @@
             toggleNoteSelection(filename);
         } else if (target.classList.contains('view-btn')) {
             handleViewNote(filename);
-        } else if (target.classList.contains('copy-btn')) {
-            handleCopyNote(target, filename);
+        } else if (target.classList.contains('delete-btn')) {
+            handleDeleteNote([filename]);
         } else if (target.classList.contains('pin-btn')) {
             handlePinNote(filename);
         } else {
@@ -310,6 +276,8 @@
         UI.displays.viewNoteContent.textContent = note.filecontent;
         UI.views.viewNoteModal.style.display = 'flex';
         UI.buttons.copyFromView.dataset.content = note.filecontent;
+        UI.buttons.downloadFromView.dataset.content = note.filecontent; // for download
+        UI.buttons.downloadFromView.dataset.title = note.title || "note"; // for download filename
         UI.views.viewNoteModal.setAttribute("aria-modal", "true");
         UI.views.viewNoteModal.setAttribute("tabindex", "-1");
         UI.buttons.closeViewModal.focus();
@@ -372,19 +340,18 @@
     }
 
     function toggleSelectAll(e) {
-        const isChecked = e.target.checked;
-        const visibleCheckboxes = document.querySelectorAll('#historyList .note-select');
-        visibleCheckboxes.forEach(cb => {
+        const checked = e.target.checked;
+        const checkboxes = document.querySelectorAll('.note-select');
+        checkboxes.forEach(cb => {
             const filename = cb.dataset.filename;
-            const item = cb.closest('.history-item');
-            if (isChecked) {
+            if (checked) {
                 state.selectedNotes.add(filename);
+                cb.closest('.history-item').classList.add('selected');
                 cb.checked = true;
-                item.classList.add('selected');
             } else {
                 state.selectedNotes.delete(filename);
+                cb.closest('.history-item').classList.remove('selected');
                 cb.checked = false;
-                item.classList.remove('selected');
             }
         });
         updateBulkActionUI();
@@ -392,43 +359,13 @@
 
     function updateBulkActionUI() {
         const count = state.selectedNotes.size;
-        UI.buttons.deleteSelected.style.display = count > 0 ? 'inline-block' : 'none';
-        if (count > 0) {
-            UI.buttons.deleteSelected.textContent = `Delete (${count})`;
-        }
-        UI.inputs.selectAllNotes.checked = (count > 0 && count === document.querySelectorAll('#historyList .note-select').length);
+        UI.buttons.deleteSelected.style.display = count > 0 ? "inline-block" : "none";
     }
 
     // --- Google Drive Integration ---
-    async function startDriveConnect() {
-        showLoader(true);
-        try {
-            const data = await apiRequest("/auth/google/start");
-            if (data.auth_url) {
-                window.location.href = data.auth_url;
-            }
-        } catch (error) {
-            showMessage(UI.displays.mainStatus, error.message, "error");
-        } finally {
-            showLoader(false);
-        }
-    }
+    async function startDriveConnect() {}
 
-    async function loadUserProfile() {
-        try {
-            const user = await apiRequest("/me");
-            if (user) {
-                state.userEmail = user.email;
-                state.driveLinked = user.drive_linked;
-                UI.displays.userEmail.textContent = state.userEmail;
-                UI.buttons.connectDrive.style.display = 'inline-block';
-                UI.buttons.connectDrive.textContent = state.driveLinked ? "Drive Connected" : "Connect Drive";
-                UI.buttons.connectDrive.disabled = state.driveLinked;
-            }
-        } catch (error) {
-            console.error("Could not load user profile", error);
-        }
-    }
+    async function loadUserProfile() {}
 
     // --- Confirmation Modal ---
     function customConfirm(msg) {
@@ -470,6 +407,7 @@
         UI.buttons.logout.addEventListener("click", logout);
         UI.buttons.cancelEdit.addEventListener("click", resetEditor);
         UI.displays.historyList.addEventListener("click", handleHistoryListClick);
+
         UI.inputs.searchNotes.addEventListener("input", (e) => renderHistory(e.target.value));
         UI.inputs.selectAllNotes.addEventListener("change", toggleSelectAll);
         UI.buttons.deleteSelected.addEventListener("click", () => handleDeleteNote([...state.selectedNotes]));
@@ -496,8 +434,21 @@
             }).catch(err => console.error("Failed to copy from modal: ", err));
         });
 
+        // Download button for modal
+        UI.buttons.downloadFromView.addEventListener('click', (e) => {
+            const content = e.target.dataset.content;
+            const title = e.target.dataset.title || "note";
+            if (content === undefined || content === null) return;
+            const element = document.createElement('a');
+            const file = new Blob([content], { type: 'text/plain' });
+            element.href = URL.createObjectURL(file);
+            element.download = title + ".txt";
+            document.body.appendChild(element);
+            element.click();
+            document.body.removeChild(element);
+        });
+
         document.addEventListener('keydown', function (e) {
-            // Close modals on Escape key
             if (e.key === "Escape") {
                 if (UI.views.viewNoteModal.style.display === 'flex') {
                     UI.views.viewNoteModal.style.display = 'none';
@@ -510,16 +461,12 @@
     }
 
     async function initializeApp() {
-        showLoader(true);
-        checkOAuthRedirectFlags();
         if (state.token) {
-            UI.buttons.logout.style.display = "inline-block";
-            await loadUserProfile();
+            loadUserProfile();
             showView("main");
         } else {
             showView("login");
         }
-        showLoader(false);
     }
 
     document.addEventListener("DOMContentLoaded", () => {
