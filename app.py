@@ -141,7 +141,14 @@ def get_user_id_from_request(req):
     auth = req.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         token = auth.split(" ", 1)[1]
-        return decode_token(token)
+        user_sub = decode_token(token)
+        if not user_sub:
+            return None
+        try:
+            return int(user_sub)
+        except Exception:
+            # fallback to raw string (some DB queries still accept string)
+            return user_sub
     return None
 
 # ---------------- secure state helpers ----------------
