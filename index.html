@@ -1,138 +1,119 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TextGrab</title>
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✂️</text></svg>">
-    <link rel="stylesheet" href="static/style.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TextGrab</title>
+  <link rel="stylesheet" href="static/style.css" />
 </head>
-
 <body>
-    <!-- Full-screen loader -->
-    <div id="loader" class="loader-overlay" style="display: none;">
-        <div class="loader"></div>
+  <div id="loader" class="loader-overlay" style="display:none;">
+    <div class="loader"></div>
+  </div>
+
+  <header class="topbar">
+    <div class="container">
+      <h1>TextGrab</h1>
+      <div class="topbar-right">
+        <span id="userEmail" class="user-email"></span>
+        <button id="connectDriveBtn" class="btn">Connect Drive</button>
+        <button id="logoutBtn" class="btn-danger" style="display:none;">Logout</button>
+      </div>
     </div>
+  </header>
 
-    <header>
-        <h1>TextGrab</h1>
-        <div class="header-actions">
-            <span id="userEmail" class="user-email"></span>
-            <button id="connectDriveBtn" class="btn-small" style="display:none;">Connect Drive</button>
-            <button id="logoutBtn" class="btn-small" style="display:none;">Logout</button>
+  <main class="container">
+    <!-- Login -->
+    <section id="loginSection" class="view card">
+      <h2>Login</h2>
+      <form id="loginForm">
+        <label>Email</label>
+        <input id="loginEmail" type="email" required />
+        <label>Password</label>
+        <input id="loginPassword" type="password" required />
+        <div id="loginMsg" class="message" role="status" style="display:none;"></div>
+        <div class="btn-row">
+          <button type="submit" class="btn">Login</button>
+          <button id="goToRegister" class="btn-secondary">Create account</button>
         </div>
-    </header>
+      </form>
+    </section>
 
-    <main>
-        <!-- Login View -->
-        <section id="loginSection" class="view card">
-            <h2>Login</h2>
-            <form id="loginForm" novalidate>
-                <div class="input-group">
-                    <label for="loginEmail">Email</label>
-                    <input type="email" id="loginEmail" required autocomplete="email">
-                </div>
-                <div class="input-group">
-                    <label for="loginPassword">Password</label>
-                    <input type="password" id="loginPassword" required autocomplete="current-password">
-                </div>
-                <div id="loginStatus" class="message" role="status"></div>
-                <button type="submit" class="btn">Login</button>
-            </form>
-            <p>Don't have an account? <a href="#" id="showRegister">Register here</a></p>
-        </section>
-
-        <!-- Register View -->
-        <section id="registerSection" class="view card" style="display: none;">
-            <h2>Register</h2>
-            <form id="registerForm" novalidate>
-                <div class="input-group">
-                    <label for="registerEmail">Email</label>
-                    <input type="email" id="registerEmail" required autocomplete="email">
-                </div>
-                <div class="input-group">
-                    <label for="registerPassword">Password</label>
-                    <input type="password" id="registerPassword" required autocomplete="new-password">
-                </div>
-                <div id="registerStatus" class="message" role="status"></div>
-                <button type="submit" class="btn">Register</button>
-            </form>
-            <p>Already have an account? <a href="#" id="showLogin">Login here</a></p>
-        </section>
-
-        <!-- Main Note Editor View -->
-        <section id="mainSection" class="view" style="display: none;">
-            <div class="card">
-                <form id="noteForm">
-                    <div class="input-group">
-                        <label for="noteTitle">Title (Optional)</label>
-                        <input type="text" id="noteTitle" placeholder="Enter a title for your note...">
-                    </div>
-                    <div class="input-group">
-                        <label for="textContent">Content</label>
-                        <textarea id="textContent" rows="10" required
-                            placeholder="Paste or type your text here..."></textarea>
-                    </div>
-                    <div class="form-actions">
-                        <div id="mainStatus" class="message" role="status"></div>
-                        <div class="button-group">
-                            <button type="button" id="clearBtn" class="btn-secondary">Clear</button>
-                            <button type="submit" class="btn">Save Note</button>
-                        </div>
-                    </div>
-                </form>
-            </div>
-            <div class="btn-row">
-                <button id="viewHistory" class="btn-secondary">View History</button>
-            </div>
-        </section>
-
-        <!-- History View -->
-        <section id="historySection" class="view card" style="display: none;">
-            <div class="history-header">
-                <h2>History</h2>
-                <button id="refreshHistory" class="btn-icon" title="Refresh History">&#x21bb;</button>
-            </div>
-             <div class="history-controls">
-                <input type="text" id="historySearch" placeholder="Search notes...">
-                <button id="deleteSelectedBtn" class="btn-small btn-danger" style="display: none;">Delete Selected</button>
-            </div>
-            <div id="historyStatus" class="message" role="status"></div>
-            <div id="historyList"></div>
-            <div class="btn-row">
-                <button id="backToMain" class="btn-secondary">Back to Editor</button>
-            </div>
-        </section>
-    </main>
-
-    <!-- Modal for Custom Confirm Dialog -->
-    <div id="customConfirm" class="modal-overlay" style="display: none;">
-        <div class="modal-content">
-            <p id="confirmMsg"></p>
-            <div class="modal-actions">
-                <button id="confirmYes" class="btn-danger">Yes</button>
-                <button id="confirmNo" class="btn-secondary">No</button>
-            </div>
+    <!-- Register -->
+    <section id="registerSection" class="view card" style="display:none;">
+      <h2>Register</h2>
+      <form id="registerForm">
+        <label>Email</label>
+        <input id="registerEmail" type="email" required />
+        <label>Password</label>
+        <input id="registerPassword" type="password" required />
+        <div id="registerMsg" class="message" role="status" style="display:none;"></div>
+        <div class="btn-row">
+          <button type="submit" class="btn">Create</button>
+          <button id="goToLogin" class="btn-secondary">Back to login</button>
         </div>
+      </form>
+    </section>
+
+    <!-- Main Editor -->
+    <section id="mainSection" class="view card" style="display:none;">
+      <h2>Editor</h2>
+      <form id="noteForm">
+        <label>Title</label>
+        <input id="noteTitle" required />
+        <label>Text</label>
+        <textarea id="textInput" rows="8" placeholder="Paste or type text here"></textarea>
+        <div class="btn-row">
+          <button id="saveBtn" type="submit" class="btn">Save Note</button>
+          <button id="cancelEditBtn" type="button" class="btn-secondary" style="display:none;">Cancel</button>
+          <button id="historyBtn" type="button" class="btn">View History</button>
+        </div>
+        <div id="status" class="message" role="status" style="display:none;"></div>
+      </form>
+    </section>
+
+    <!-- History/Notes -->
+    <section id="historySection" class="view card" style="display:none;">
+      <h2>Your Saved Notes</h2>
+      <input id="searchNotes" type="search" placeholder="Search by title or content..." />
+      <div id="bulkActions" class="bulk-actions">
+        <div class="select-all-container">
+          <input id="selectAllNotes" type="checkbox" />
+          <label for="selectAllNotes">Select all visible</label>
+        </div>
+        <button id="deleteSelectedBtn" class="btn-danger" style="display:none;">Delete Selected</button>
+      </div>
+      <div id="historyStatus" class="message" role="status" style="display:none;"></div>
+      <div id="historyList" class="history-list"></div>
+      <div class="btn-row">
+        <button id="backToMain" class="btn-secondary">Back to Editor</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Confirm Modal -->
+  <div id="customConfirm" class="modal-overlay" style="display:none;">
+    <div class="modal-content">
+      <p id="confirmMsg"></p>
+      <div class="modal-actions">
+        <button id="confirmYes" class="btn-danger">Yes</button>
+        <button id="confirmNo" class="btn-secondary">No</button>
+      </div>
     </div>
+  </div>
 
-    <!-- Modal for Viewing Note Content -->
-    <div id="viewNoteModal" class="modal-overlay" style="display: none;">
-        <div class="modal-content modal-content--large">
-            <h3 id="viewNoteTitle" class="modal-title"></h3>
-            <pre id="viewNoteContent" class="modal-body"></pre>
-            <div class="modal-actions">
-                <button id="copyFromView" class="btn">Copy Content</button>
-                <button id="openInDriveFromView" class="btn" style="display: none;">Open in Drive</button>
-                <button id="deleteFromView" class="btn-danger">Delete</button>
-                <button id="closeViewModal" class="btn-secondary">Close</button>
-            </div>
-        </div>
+  <!-- View Note Modal -->
+  <div id="viewNoteModal" class="modal-overlay" style="display:none;">
+    <div class="modal-content modal-content--large">
+      <h3 id="viewNoteTitle"></h3>
+      <pre id="viewNoteContent" class="modal-body"></pre>
+      <div class="modal-actions">
+        <button id="copyFromView" class="btn">Copy Content</button>
+        <button id="closeViewModal" class="btn-secondary">Close</button>
+      </div>
     </div>
+  </div>
 
-    <script src="static/script.js"></script>
-
+  <script src="static/script.js"></script>
 </body>
 </html>
