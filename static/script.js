@@ -1,3 +1,4 @@
+// static/script.js
 (function () {
     "use strict";
 
@@ -40,7 +41,6 @@
             selectAllNotes: document.getElementById("selectAllNotes"),
         },
         displays: {
-            // map to the IDs actually present in index.html
             mainStatus: document.getElementById("status"),
             loginStatus: document.getElementById("loginMsg"),
             registerStatus: document.getElementById("registerMsg"),
@@ -82,7 +82,6 @@
         try {
             const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
             if (response.status === 401) {
-                // token invalid or expired
                 logout();
                 throw new Error("Unauthorized - please login again.");
             }
@@ -140,7 +139,6 @@
         state.currentView = viewName;
         for (const key in UI.views) {
             if (!UI.views[key]) continue;
-            // keep modal separate - only show it when requested
             if (key === "viewNoteModal") {
                 UI.views[key].style.display = (viewName === key) ? "flex" : "none";
                 continue;
@@ -163,13 +161,12 @@
     function showMessage(element, message, type = "info", duration = 4000) {
         if (!element) return;
         element.textContent = message || "";
-        element.className = `message ${type} show`; 
+        element.className = `message ${type} show`;
         element.style.display = "block";
         clearTimeout(state.messageTimeout);
         if (duration > 0) {
             state.messageTimeout = setTimeout(() => {
                 element.classList.remove("show");
-                // hide after animation settle
                 setTimeout(() => { element.style.display = "none"; }, 300);
             }, duration);
         }
@@ -186,10 +183,10 @@
         const urlParams = new URLSearchParams(window.location.search);
         if (urlParams.has('google_link_success')) {
             showMessage(UI.displays.mainStatus, 'Google Drive linked successfully!', 'success');
-            history.replaceState(null, '', window.location.pathname); // Clean URL
+            history.replaceState(null, '', window.location.pathname);
         } else if (urlParams.has('google_link_error')) {
             showMessage(UI.displays.mainStatus, 'Failed to link Google Drive.', 'error');
-            history.replaceState(null, '', window.location.pathname); // Clean URL
+            history.replaceState(null, '', window.location.pathname);
         }
     }
 
@@ -209,7 +206,6 @@
             const data = await apiRequest("/save", "POST", payload);
             showMessage(UI.displays.mainStatus, data.message || "Saved", "success");
             resetEditor();
-            // refresh history cache so the saved note shows up next time user opens history
             await fetchHistory();
         } catch (error) {
             showMessage(UI.displays.mainStatus, error.message || "Failed to save note", "error");
@@ -242,9 +238,7 @@
         showLoader(true);
         try {
             await apiRequest("/delete", "POST", { filenames });
-            // Refresh history from server
             await fetchHistory();
-            // Clear selections
             state.selectedNotes.clear();
             updateBulkActionUI();
             showMessage(UI.displays.historyStatus, `Successfully deleted ${filenames.length} note(s).`, "success");
@@ -274,14 +268,12 @@
 
         if (notesToRender.length === 0) {
             list.innerHTML = `<p class="message info show">No notes found.</p>`;
-            // update bulk UI
             state.selectedNotes.clear();
             updateBulkActionUI();
             return;
         }
 
         const html = notesToRender.map(note => {
-            // encode filename for safe data-* attribute use
             const encodedFilename = encodeURIComponent(note.filename || "");
             const isSelected = state.selectedNotes.has(note.filename);
             const isPinned = state.pinnedNotes.has(note.filename);
@@ -341,7 +333,7 @@
         UI.displays.viewNoteTitle.textContent = note.title || "(untitled)";
         UI.displays.viewNoteContent.textContent = note.filecontent || "";
         UI.views.viewNoteModal.style.display = 'flex';
-        UI.buttons.copyFromView.dataset.content = note.filecontent || "";
+        if (UI.buttons.copyFromView) UI.buttons.copyFromView.dataset.content = note.filecontent || "";
     }
 
     function handleCopyNote(button, filename) {
@@ -383,7 +375,6 @@
         if (UI.forms.note) UI.forms.note.reset();
         if (UI.buttons.save) UI.buttons.save.textContent = "Save Note";
         if (UI.buttons.cancelEdit) UI.buttons.cancelEdit.style.display = "none";
-        // clear main status message
         if (UI.displays.mainStatus) {
             UI.displays.mainStatus.textContent = "";
             UI.displays.mainStatus.className = "message";
@@ -482,7 +473,7 @@
         return new Promise((resolve) => {
             const modal = document.getElementById('customConfirm');
             if (!modal) {
-                resolve(confirm(msg)); // fallback
+                resolve(confirm(msg));
                 return;
             }
             document.getElementById('confirmMsg').textContent = msg;
@@ -508,11 +499,8 @@
 
     // --- Initialization ---
     function setupEventListeners() {
-        // Login & Register forms
         UI.forms.login && UI.forms.login.addEventListener("submit", (e) => handleAuth(e, "/login", UI.displays.loginStatus, UI.inputs.loginEmail, UI.inputs.loginPassword));
         UI.forms.register && UI.forms.register.addEventListener("submit", (e) => handleAuth(e, "/register", UI.displays.registerStatus, UI.inputs.registerEmail, UI.inputs.registerPassword));
-
-        // Note form handling (submit on form, not just click on the button)
         UI.forms.note && UI.forms.note.addEventListener("submit", handleSaveNote);
 
         UI.buttons.goToRegister && UI.buttons.goToRegister.addEventListener("click", (e) => { e.preventDefault(); showView("register"); });
@@ -527,7 +515,6 @@
         UI.buttons.deleteSelected && UI.buttons.deleteSelected.addEventListener("click", () => handleDeleteNote([...state.selectedNotes]));
         UI.buttons.connectDrive && UI.buttons.connectDrive.addEventListener("click", (e) => { e.preventDefault(); startDriveConnect(); });
 
-        // Modal listeners
         UI.buttons.closeViewModal && UI.buttons.closeViewModal.addEventListener('click', () => {
             UI.views.viewNoteModal.style.display = 'none';
         });
