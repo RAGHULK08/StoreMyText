@@ -86,6 +86,9 @@
         try {
             const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
             if (!response.ok) {
+                if (response.status === 401) {
+                    throw new Error("Unauthorized"); // Specific error for auth failure
+                }
                 const errorData = await response.json().catch(() => ({ error: "An unknown error occurred" }));
                 throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
             }
@@ -206,7 +209,12 @@
             UI.forms.note.reset();
             state.editingFilename = null;
         } catch (error) {
-            showMessage(UI.text.mainStatus, error.message, true);
+            if (error.message === "Unauthorized") {
+                handleLogout();
+                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
+            } else {
+                showMessage(UI.text.mainStatus, error.message, true);
+            }
         } finally {
             showLoader(false);
         }
@@ -219,7 +227,12 @@
             state.notesCache = data.notes;
             renderHistory();
         } catch (error) {
-            showMessage(UI.text.historyStatus, "Failed to load history.", true);
+            if (error.message === "Unauthorized") {
+                handleLogout();
+                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
+            } else {
+                showMessage(UI.text.historyStatus, "Failed to load history.", true);
+            }
         } finally {
             showLoader(false);
         }
@@ -233,7 +246,12 @@
             state.selectedNotes.clear();
             loadHistory();
         } catch (error) {
-            showMessage(UI.text.historyStatus, error.message, true);
+            if (error.message === "Unauthorized") {
+                handleLogout();
+                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
+            } else {
+                showMessage(UI.text.historyStatus, error.message, true);
+            }
         } finally {
             showLoader(false);
         }
@@ -377,6 +395,9 @@
         } catch (error) {
             console.error("Failed to load profile:", error);
             handleLogout();
+            if (error.message === "Unauthorized") {
+                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
+            }
         }
     }
 
@@ -387,7 +408,12 @@
                 window.location.href = data.auth_url;
             }
         } catch (error) {
-            showMessage(UI.text.mainStatus, "Failed to start Drive connection.", true);
+            if (error.message === "Unauthorized") {
+                handleLogout();
+                showMessage(UI.text.loginStatus, "Your session has expired. Please log in again.", true, 5000);
+            } else {
+                showMessage(UI.text.mainStatus, "Failed to start Drive connection.", true);
+            }
         }
     }
 
