@@ -97,7 +97,15 @@
                 showView("login");
             }
         } catch (error) {
-            statusEl.textContent = error.message;
+            // Enhanced error handling for login
+            if (endpoint === "/login" && error.message.includes("Invalid credentials")) {
+                statusEl.textContent = "Email not registered. Please register first.";
+            } else if (endpoint === "/register" && error.message.includes("Email already registered")) {
+                statusEl.textContent = "Email already registered. Please login.";
+                showView("login");
+            } else {
+                statusEl.textContent = error.message;
+            }
         }
     }
 
@@ -105,9 +113,11 @@
         localStorage.removeItem("token");
         state.token = null;
         state.userEmail = null;
+        state.driveLinked = false;
         showView("login");
         UI.buttons.logout.style.display = "none";
         UI.displays.userEmail.textContent = "";
+        UI.buttons.connectDrive.style.display = "none";
     }
 
     // --- UI & View Management ---
@@ -120,19 +130,28 @@
         if (viewName === "main" || viewName === "history" || viewName === "viewNoteModal") {
             UI.buttons.logout.style.display = "inline-block";
             if (state.userEmail) UI.displays.userEmail.textContent = state.userEmail;
+
+            // Show connectDrive button if not linked
+            if (!state.driveLinked) {
+                UI.buttons.connectDrive.style.display = "inline-block";
+            } else {
+                UI.buttons.connectDrive.style.display = "none";
+            }
         } else {
             UI.buttons.logout.style.display = "none";
             UI.displays.userEmail.textContent = "";
+            UI.buttons.connectDrive.style.display = "none";
         }
     }
 
     function showLoader(show) {
         document.body.classList.toggle("loading", !!show);
+        document.getElementById("loader").style.display = show ? "flex" : "none";
     }
 
     function showMessage(element, message, type = "info", duration = 4000) {
         element.textContent = message;
-        element.className = `message ${type}`;
+        element.className = `message ${type} show`;
         if (duration > 0) {
             clearTimeout(state.messageTimeout);
             state.messageTimeout = setTimeout(() => {
@@ -164,10 +183,22 @@
             return;
         }
 
+        // If Drive not linked, show prompt, but still allow save
+        if (!state.driveLinked) {
+            showMessage(UI.displays.mainStatus, "Connect to Google Drive to store notes in Drive. Click the button above.", "error", 5000);
+        }
+
         showLoader(true);
         try {
             const payload = { title, content, filename: state.editingFilename };
             const data = await apiRequest("/save", "POST", payload);
+
+            // If note was saved to Drive, and API returned drive_file_id, set driveLinked true
+            if (data.drive_file_id) {
+                state.driveLinked = true;
+                UI.buttons.connectDrive.style.display = "none";
+            }
+
             showMessage(UI.displays.mainStatus, data.message, "success");
             resetEditor();
         } catch (error) {
@@ -374,14 +405,44 @@
     }
 
     // --- Google Drive Integration ---
-    async function startDriveConnect() {}
+    async function startDriveConnect() {
+        // Start OAuth flow to connect Google Drive
+        showLoader(true);
+        try {
+            const data = await apiRequest("/auth/google/start");
+            if (data && data.auth_url) {
+                window.open(data.auth_url, "_blank");
+                showMessage(UI.displays.mainStatus, "Google Drive authorization window opened. Please complete the process.", "info", 5000);
+            } else {
+                showMessage(UI.displays.mainStatus, "Failed to start Google Drive connection.", "error");
+            }
+        } catch (error) {
+            showMessage(UI.displays.mainStatus, error.message || "Failed to start Google Drive connection.", "error");
+        } finally {
+            showLoader(false);
+        }
+    }
 
     async function loadUserProfile() {
-        // Fill in user info if available, or you can call an API to get user profile
-        // Example: UI.displays.userEmail.textContent = "user@example.com";
-        // For demo, show token existence
-        if (state.token) {
-            UI.displays.userEmail.textContent = "Logged in";
+        // Get user info & drive link status
+        if (!state.token) return;
+        try {
+            const data = await apiRequest("/me");
+            state.userEmail = data.email || "Logged in";
+            state.driveLinked = !!data.drive_linked;
+            UI.displays.userEmail.textContent = state.userEmail;
+
+            // Show connectDrive button if not linked
+            if (!state.driveLinked) {
+                UI.buttons.connectDrive.style.display = "inline-block";
+            } else {
+                UI.buttons.connectDrive.style.display = "none";
+            }
+        } catch (error) {
+            state.userEmail = "Logged in";
+            state.driveLinked = false;
+            UI.displays.userEmail.textContent = state.userEmail;
+            UI.buttons.connectDrive.style.display = "inline-block";
         }
     }
 
@@ -480,7 +541,7 @@
 
     async function initializeApp() {
         if (state.token) {
-            loadUserProfile();
+            await loadUserProfile();
             showView("main");
         } else {
             showView("login");
