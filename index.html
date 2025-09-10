@@ -34,7 +34,7 @@
                     required />
                 <button type="submit">Login</button>
             </form>
-            <div id="loginMsg" class="message" role="status"></div>
+            <div id="loginMsg" class="message" role="status" aria-live="polite"></div>
             <p class="form-switcher">Don't have an account? <a href="#" id="goToRegister">Register</a></p>
         </section>
 
@@ -47,7 +47,7 @@
                     required />
                 <button type="submit">Register</button>
             </form>
-            <div id="registerMsg" class="message" role="status"></div>
+            <div id="registerMsg" class="message" role="status" aria-live="polite"></div>
             <p class="form-switcher">Already have an account? <a href="#" id="goToLogin">Login</a></p>
         </section>
 
@@ -64,7 +64,7 @@
                     <button type="button" id="historyBtn" class="btn-secondary">View History</button>
                 </div>
             </form>
-            <div id="status" class="message" role="status"></div>
+            <div id="status" class="message" role="status" aria-live="polite"></div>
         </section>
 
         <!-- History/Notes List View -->
@@ -79,7 +79,7 @@
                 <button id="deleteSelectedBtn" class="btn-small btn-danger" style="display: none;">Delete
                     Selected</button>
             </div>
-            <div id="historyStatus" class="message" role="status"></div>
+            <div id="historyStatus" class="message" role="status" aria-live="polite"></div>
             <div id="historyList"></div>
             <div class="btn-row">
                 <button id="backToMain" class="btn-secondary">Back to Editor</button>
@@ -115,4 +115,3 @@
 </body>
 
 </html>
-
