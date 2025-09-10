@@ -2,17 +2,7 @@
     "use strict";
 
     // --- Configuration & State ---
-    const API_BASE_URL = (function () {
-        if (window.API_BASE_URL) return window.API_BASE_URL; 
-        try {
-            if (window.location && window.location.protocol && window.location.protocol.startsWith('http')) {
-                return window.location.origin;
-            }
-        } catch (e) {
-            // ignore
-        }
-        return "https://savetext-0pk6.onrender.com";
-    })();
+    const API_BASE_URL = "https://savetext-0pk6.onrender.com";
 
     const state = {
         token: localStorage.getItem("token"),
@@ -622,3 +612,4 @@
         initializeApp();
     });
 })();
+
