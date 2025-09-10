@@ -2,8 +2,18 @@
     "use strict";
 
     // --- Configuration & State ---
-    // Change API_BASE_URL if your backend is hosted elsewhere
-    const API_BASE_URL = "https://savetext-0pk6.onrender.com";
+    const API_BASE_URL = (function () {
+        if (window.API_BASE_URL) return window.API_BASE_URL; 
+        try {
+            if (window.location && window.location.protocol && window.location.protocol.startsWith('http')) {
+                return window.location.origin;
+            }
+        } catch (e) {
+            // ignore
+        }
+        return "https://savetext-0pk6.onrender.com";
+    })();
+
     const state = {
         token: localStorage.getItem("token"),
         currentView: "",
@@ -49,7 +59,8 @@
             userEmail: document.getElementById("userEmail"),
             bulkActions: document.getElementById("bulkActions"),
             viewNoteTitle: document.getElementById("viewNoteTitle"),
-            viewNoteContent: document.getElementById("viewNoteContent")
+            viewNoteContent: document.getElementById("viewNoteContent"),
+            driveIndicator: document.getElementById("driveIndicator")
         },
         buttons: {
             save: document.getElementById("saveBtn"),
@@ -78,22 +89,19 @@
             body: body ? JSON.stringify(body) : undefined
         });
         if (!res.ok) {
-            // try to parse JSON error message cleanly
             const text = await res.text();
             try {
                 const json = JSON.parse(text);
                 const msg = json.error || json.message || res.statusText;
                 throw new Error(msg);
             } catch (e) {
-                // not json
                 throw new Error(text || res.statusText);
             }
         }
-        // success
         try {
             return await res.json();
         } catch (e) {
-            return {}; // no JSON body
+            return {};
         }
     }
 
@@ -115,12 +123,10 @@
                     throw new Error("Login succeeded but no token was returned.");
                 }
             } else {
-                // registered
                 showMessage(statusEl, "Registered successfully. Please login.", "success");
                 showView("login");
             }
         } catch (error) {
-            // show friendly message
             const msg = (error && error.message) ? error.message : "An error occurred";
             showMessage(statusEl, msg, "error");
         }
@@ -134,6 +140,7 @@
         UI.displays.userEmail.textContent = "";
         UI.buttons.connectDrive.style.display = "none";
         UI.buttons.connectDrive.disabled = false;
+        updateDriveIndicator();
         showView("login");
         showMessage(UI.displays.loginStatus, "Logged out.", "info");
     }
@@ -148,7 +155,7 @@
         if (viewName === "main" || viewName === "history" || viewName === "viewNoteModal") {
             UI.buttons.logout.style.display = state.token ? "inline-block" : "none";
             if (state.userEmail) UI.displays.userEmail.textContent = state.userEmail;
-            // Show Drive connect if logged in and not linked (otherwise show a connected indicator)
+            // Drive connect visibility and state
             if (state.token) {
                 if (state.driveLinked) {
                     UI.buttons.connectDrive.style.display = "inline-block";
@@ -162,10 +169,12 @@
             } else {
                 UI.buttons.connectDrive.style.display = "none";
             }
+            updateDriveIndicator();
         } else {
             UI.buttons.logout.style.display = "none";
             UI.displays.userEmail.textContent = "";
             UI.buttons.connectDrive.style.display = "none";
+            updateDriveIndicator();
         }
     }
 
@@ -198,15 +207,12 @@
     }
 
     function checkOAuthRedirectFlags() {
-        // When backend redirects to FRONTEND_URL with ?google_link_success=1 or ?google_link_error=1
         const params = new URLSearchParams(window.location.search);
         if (params.get("google_link_success") === "1") {
             showMessage(UI.displays.mainStatus, "Google Drive connected successfully.", "success", 6000);
-            // update UI state: re-check profile to flip the Drive connected state
             if (state.token) {
                 loadUserProfile().catch(() => { /* ignore */ });
             }
-            // remove param from URL (clean)
             params.delete("google_link_success");
             const newUrl = window.location.pathname + (params.toString() ? "?" + params.toString() : "");
             window.history.replaceState({}, document.title, newUrl);
@@ -439,12 +445,10 @@
 
     // --- Google Drive Integration ---
     async function startDriveConnect() {
-        // Calls backend /auth/google/start which returns { auth_url, redirect_uri }
         showLoader(true);
         try {
             const data = await apiRequest("/auth/google/start", "GET");
             if (data && data.auth_url) {
-                // redirect browser to the Google OAuth URL
                 window.location.href = data.auth_url;
             } else {
                 showMessage(UI.displays.mainStatus, "Google authorization not configured on backend.", "error");
@@ -466,12 +470,11 @@
         showLoader(true);
         try {
             const profile = await apiRequest("/me", "GET");
-            // expected { id, email, drive_linked }
             state.userEmail = profile.email || "Logged in";
             state.driveLinked = !!profile.drive_linked;
+            // update UI header and main view visibility
             showView(state.currentView === "history" ? "history" : "main");
         } catch (error) {
-            // if unauthorized, clear token and force login
             if (error.message && error.message.toLowerCase().includes("authorization")) {
                 localStorage.removeItem("token");
                 state.token = null;
@@ -482,6 +485,28 @@
             }
         } finally {
             showLoader(false);
+        }
+    }
+
+    function updateDriveIndicator() {
+        const el = UI.displays.driveIndicator;
+        if (!el) return;
+        if (state.token) {
+            if (state.driveLinked) {
+                el.style.display = "inline-block";
+                el.classList.remove("muted");
+                el.classList.add("connected");
+                el.textContent = "☁️";
+                el.title = "Google Drive connected";
+            } else {
+                el.style.display = "inline-block";
+                el.classList.remove("connected");
+                el.classList.add("muted");
+                el.textContent = "☁️";
+                el.title = "Google Drive not connected";
+            }
+        } else {
+            el.style.display = "none";
         }
     }
 
