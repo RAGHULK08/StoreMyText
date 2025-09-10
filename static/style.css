@@ -74,6 +74,25 @@ a:hover {
     text-decoration: underline;
 }
 
+/* --- Drive Indicator --- */
+.drive-indicator {
+            display: inline-block;
+            margin-left: 10px;
+            font-size: 1.05rem;
+            vertical-align: middle;
+            cursor: default;
+            transition: opacity 150ms ease;
+        }
+        .drive-indicator.muted {
+            opacity: 0.3;
+        }
+        .drive-indicator.connected {
+            color: #0a9a46; /* green */
+            opacity: 1;
+        }
+        .header-actions { display:flex; align-items:center; gap:8px; }
+        .user-email { font-size:0.95rem; color:#333; margin-right:6px; }
+
 /* --- Layout --- */
 header {
     background: var(--white);
@@ -577,3 +596,4 @@ button:disabled {
         width: 100%;
     }
 }
+
