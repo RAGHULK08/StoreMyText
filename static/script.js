@@ -11,7 +11,7 @@
         selectedNotes: new Set(),
         messageTimeout: null,
         userEmail: null,
-        driveLinked: JSON.parse(localStorage.getItem("driveLinked") || "false"),
+        driveLinked: false,
         pinnedNotes: new Set(JSON.parse(localStorage.getItem("pinnedNotes") || "[]"))
     };
 
@@ -90,9 +90,8 @@
             if (endpoint === "/login") {
                 localStorage.setItem("token", data.token);
                 state.token = data.token;
-                state.userEmail = payload.email;
-                loadUserProfile();
                 showView("main");
+                loadUserProfile();
             } else {
                 statusEl.textContent = "Registered successfully. Please login.";
                 showView("login");
@@ -107,7 +106,7 @@
         state.token = null;
         state.userEmail = null;
         showView("login");
-        updateHeaderActions();
+        UI.buttons.logout.style.display = "none";
         UI.displays.userEmail.textContent = "";
     }
 
@@ -118,10 +117,8 @@
         state.currentView = viewName;
 
         // Show/hide header actions based on auth
-        updateHeaderActions();
-
         if (viewName === "main" || viewName === "history" || viewName === "viewNoteModal") {
-            UI.buttons.logout.style.display = state.token ? "inline-block" : "none";
+            UI.buttons.logout.style.display = "inline-block";
             if (state.userEmail) UI.displays.userEmail.textContent = state.userEmail;
         } else {
             UI.buttons.logout.style.display = "none";
@@ -129,32 +126,7 @@
         }
     }
 
-    function updateHeaderActions() {
-        // Show connect drive only when logged in and on main/history views
-        const canShowDrive = !!state.token && (state.currentView === "main" || state.currentView === "history");
-        if (canShowDrive) {
-            if (state.driveLinked) {
-                UI.buttons.connectDrive.textContent = "Drive Linked";
-                UI.buttons.connectDrive.disabled = true;
-                UI.buttons.connectDrive.style.display = "inline-block";
-            } else {
-                UI.buttons.connectDrive.textContent = "Connect Drive";
-                UI.buttons.connectDrive.disabled = false;
-                UI.buttons.connectDrive.style.display = "inline-block";
-            }
-        } else {
-            UI.buttons.connectDrive.style.display = "none";
-        }
-
-        // Logout visibility
-        UI.buttons.logout.style.display = state.token ? "inline-block" : "none";
-
-        // Set user email display
-        UI.displays.userEmail.textContent = state.token ? (state.userEmail || "Logged in") : "";
-    }
-
     function showLoader(show) {
-        document.getElementById("loader").style.display = show ? "flex" : "none";
         document.body.classList.toggle("loading", !!show);
     }
 
@@ -402,41 +374,14 @@
     }
 
     // --- Google Drive Integration ---
-    async function startDriveConnect() {
-        // Basic client-side stub to simulate Drive linking.
-        if (!state.token) {
-            showMessage(UI.displays.mainStatus, "Please login before connecting Google Drive.", "error");
-            showView("login");
-            return;
-        }
-
-        if (state.driveLinked) {
-            showMessage(UI.displays.mainStatus, "Drive already linked.", "info");
-            return;
-        }
-
-        // Simulate connect process
-        showLoader(true);
-        try {
-            await new Promise(resolve => setTimeout(resolve, 700));
-            state.driveLinked = true;
-            localStorage.setItem("driveLinked", JSON.stringify(true));
-            showMessage(UI.displays.mainStatus, "Google Drive connected (simulated).", "success");
-            updateHeaderActions();
-        } catch (err) {
-            showMessage(UI.displays.mainStatus, "Failed to connect Google Drive.", "error");
-            console.error(err);
-        } finally {
-            showLoader(false);
-        }
-    }
+    async function startDriveConnect() { }
 
     async function loadUserProfile() {
+        // Fill in user info if available, or you can call an API to get user profile
+        // Example: UI.displays.userEmail.textContent = "user@example.com";
+        // For demo, show token existence
         if (state.token) {
-            UI.displays.userEmail.textContent = state.userEmail || "Logged in";
-            updateHeaderActions();
-        } else {
-            updateHeaderActions();
+            UI.displays.userEmail.textContent = "Logged in";
         }
     }
 
