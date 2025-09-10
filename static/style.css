@@ -261,19 +261,35 @@ button:disabled {
 }
 
 .history-item {
-    background: var(--white);
-    padding: 1rem;
+    background-color: var(--white);
+    border-radius: var(--border-radius-md);
+    padding: 1rem 1.5rem;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
     border: 1px solid var(--border-color);
-    border-radius: var(--border-radius-sm);
+    transition: all 0.2s ease-in-out;
     display: flex;
+    justify-content: space-between;
     align-items: center;
     gap: 1rem;
-    transition: box-shadow var(--transition-speed);
+}
+
+.history-item.selected {
+    border-left: 4px solid var(--accent-right);
+    background-color: #e9f2ff;
+}
+
+.history-item.pinned {
+    background-color: #fffbeb;
+    border-left: 4px solid #facc15;
 }
 
 .history-item:hover {
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+    cursor: pointer;
 }
+
 
 .history-item-content {
     flex-grow: 1;
@@ -335,7 +351,8 @@ button:disabled {
     padding: 0.5rem 0.75rem;
     border-radius: var(--border-radius-sm);
     opacity: 0;
-    transition: opacity 0.5s;
+    transition: opacity 0.5s ease-in-out;
+    /* Added transition */
 }
 
 .message.show {
@@ -428,35 +445,15 @@ button:disabled {
     }
 }
 
-.history-item {
-    background-color: var(--white);
-    border-radius: var(--border-radius-md);
-    padding: 1rem 1.5rem;
-    margin-bottom: 1rem;
-    box-shadow: var(--shadow-sm);
-    border: 1px solid var(--border-color);
-    transition: all 0.2s ease-in-out;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
-}
-
-.history-item.pinned {
-    background-color: #fffbeb;
-    border-left: 4px solid #facc15;
-}
-
-.history-item:hover {
-    box-shadow: var(--shadow-md);
-    transform: translateY(-2px);
-    cursor: pointer;
-}
-
 .note-info {
     display: flex;
     align-items: center;
     gap: 1rem;
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.note-text-content {
     flex-grow: 1;
     min-width: 0;
 }
@@ -514,14 +511,6 @@ button:disabled {
     color: #f97316;
 }
 
-/* ... existing code ... */
-.modal-content {
-    /* ... existing code ... */
-    width: 90%;
-    max-width: 400px;
-    text-align: center;
-}
-
 .modal-content--large {
     max-width: 800px;
     text-align: left;
@@ -550,11 +539,6 @@ button:disabled {
     color: var(--text-primary);
 }
 
-.modal-content p {
-    margin-bottom: 1.5rem;
-    font-size: 1.1rem;
-}
-
 /* --- Responsive Design --- */
 @media (max-width: 768px) {
     body {
@@ -569,8 +553,7 @@ button:disabled {
         padding: 0 1rem;
     }
 
-    .card,
-    .view {
+    .card {
         padding: 1.5rem;
     }
 
