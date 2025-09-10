@@ -90,7 +90,7 @@
     // --- Authentication ---
     async function handleAuth(e, endpoint, statusEl, emailInput, passwordInput) {
         e.preventDefault();
-        showMessage(statusEl, "", "info", 0); // Clear previous message
+        showMessage(statusEl, "", "info", 0);
         try {
             const payload = { email: emailInput.value.trim(), password: passwordInput.value.trim() };
              if (!payload.email || !payload.password) {
@@ -109,7 +109,18 @@
                 UI.forms.register.reset();
             }
         } catch (error) {
-            showMessage(statusEl, error.message, "error");
+            let errorMessage = "An unknown error occurred.";
+            try {
+                const errorObj = JSON.parse(error.message);
+                if (errorObj && (errorObj.error || errorObj.message)) {
+                    errorMessage = errorObj.error || errorObj.message;
+                } else {
+                    errorMessage = error.message;
+                }
+            } catch (parseError) {
+                errorMessage = error.message;
+            }
+            showMessage(statusEl, errorMessage, "error");
         }
     }
 
@@ -160,7 +171,6 @@
         if (duration > 0) {
             state.messageTimeout = setTimeout(() => {
                 element.classList.remove("show");
-                // Clear text after the fade-out transition completes
                 setTimeout(() => {
                     if (!element.classList.contains('show')) {
                         element.textContent = "";
@@ -226,7 +236,6 @@
         showLoader(true);
         try {
             await apiRequest("/delete", "POST", { filenames });
-            // Remove from cache locally before refetching for faster UI update
             state.notesCache = state.notesCache.filter(note => !filenames.includes(note.filename));
             filenames.forEach(name => state.selectedNotes.delete(name));
             renderHistory(UI.inputs.searchNotes.value);
@@ -383,8 +392,6 @@
     }
 
     async function loadUserProfile() {
-        // In a real app, you might fetch the user profile here.
-        // For now, we'll just indicate they are logged in.
         if (state.token) {
             try {
                 // A dummy call to check if token is valid.
