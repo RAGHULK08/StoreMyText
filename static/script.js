@@ -2,6 +2,7 @@
     "use strict";
 
     // --- Configuration & State ---
+    // Change API_BASE_URL if your backend is hosted elsewhere
     const API_BASE_URL = "https://savetext-0pk6.onrender.com";
     const state = {
         token: localStorage.getItem("token"),
@@ -76,8 +77,24 @@
             headers,
             body: body ? JSON.stringify(body) : undefined
         });
-        if (!res.ok) throw new Error(await res.text());
-        return await res.json();
+        if (!res.ok) {
+            // try to parse JSON error message cleanly
+            const text = await res.text();
+            try {
+                const json = JSON.parse(text);
+                const msg = json.error || json.message || res.statusText;
+                throw new Error(msg);
+            } catch (e) {
+                // not json
+                throw new Error(text || res.statusText);
+            }
+        }
+        // success
+        try {
+            return await res.json();
+        } catch (e) {
+            return {}; // no JSON body
+        }
     }
 
     // --- Authentication ---
@@ -88,16 +105,24 @@
             const payload = { email: emailInput.value.trim(), password: passwordInput.value.trim() };
             const data = await apiRequest(endpoint, "POST", payload);
             if (endpoint === "/login") {
-                localStorage.setItem("token", data.token);
-                state.token = data.token;
-                showView("main");
-                loadUserProfile();
+                if (data.token) {
+                    localStorage.setItem("token", data.token);
+                    state.token = data.token;
+                    await loadUserProfile();
+                    showView("main");
+                    showMessage(UI.displays.mainStatus, "Login successful", "success");
+                } else {
+                    throw new Error("Login succeeded but no token was returned.");
+                }
             } else {
-                statusEl.textContent = "Registered successfully. Please login.";
+                // registered
+                showMessage(statusEl, "Registered successfully. Please login.", "success");
                 showView("login");
             }
         } catch (error) {
-            statusEl.textContent = error.message;
+            // show friendly message
+            const msg = (error && error.message) ? error.message : "An error occurred";
+            showMessage(statusEl, msg, "error");
         }
     }
 
@@ -105,9 +130,12 @@
         localStorage.removeItem("token");
         state.token = null;
         state.userEmail = null;
-        showView("login");
-        UI.buttons.logout.style.display = "none";
+        state.driveLinked = false;
         UI.displays.userEmail.textContent = "";
+        UI.buttons.connectDrive.style.display = "none";
+        UI.buttons.connectDrive.disabled = false;
+        showView("login");
+        showMessage(UI.displays.loginStatus, "Logged out.", "info");
     }
 
     // --- UI & View Management ---
@@ -118,11 +146,26 @@
 
         // Show/hide header actions based on auth
         if (viewName === "main" || viewName === "history" || viewName === "viewNoteModal") {
-            UI.buttons.logout.style.display = "inline-block";
+            UI.buttons.logout.style.display = state.token ? "inline-block" : "none";
             if (state.userEmail) UI.displays.userEmail.textContent = state.userEmail;
+            // Show Drive connect if logged in and not linked (otherwise show a connected indicator)
+            if (state.token) {
+                if (state.driveLinked) {
+                    UI.buttons.connectDrive.style.display = "inline-block";
+                    UI.buttons.connectDrive.textContent = "Drive Connected";
+                    UI.buttons.connectDrive.disabled = true;
+                } else {
+                    UI.buttons.connectDrive.style.display = "inline-block";
+                    UI.buttons.connectDrive.textContent = "Connect Drive";
+                    UI.buttons.connectDrive.disabled = false;
+                }
+            } else {
+                UI.buttons.connectDrive.style.display = "none";
+            }
         } else {
             UI.buttons.logout.style.display = "none";
             UI.displays.userEmail.textContent = "";
+            UI.buttons.connectDrive.style.display = "none";
         }
     }
 
@@ -131,6 +174,7 @@
     }
 
     function showMessage(element, message, type = "info", duration = 4000) {
+        if (!element) return;
         element.textContent = message;
         element.className = `message ${type}`;
         if (duration > 0) {
@@ -143,7 +187,8 @@
     }
 
     function escapeHTML(str) {
-        return str.replace(/[&<>"']/g, m => ({
+        if (!str) return "";
+        return String(str).replace(/[&<>"']/g, m => ({
             '&': '&amp;',
             '<': '&lt;',
             '>': '&gt;',
@@ -152,7 +197,26 @@
         })[m]);
     }
 
-    function checkOAuthRedirectFlags() { }
+    function checkOAuthRedirectFlags() {
+        // When backend redirects to FRONTEND_URL with ?google_link_success=1 or ?google_link_error=1
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("google_link_success") === "1") {
+            showMessage(UI.displays.mainStatus, "Google Drive connected successfully.", "success", 6000);
+            // update UI state: re-check profile to flip the Drive connected state
+            if (state.token) {
+                loadUserProfile().catch(() => { /* ignore */ });
+            }
+            // remove param from URL (clean)
+            params.delete("google_link_success");
+            const newUrl = window.location.pathname + (params.toString() ? "?" + params.toString() : "");
+            window.history.replaceState({}, document.title, newUrl);
+        } else if (params.get("google_link_error") === "1") {
+            showMessage(UI.displays.mainStatus, "Google Drive linking failed. Try again.", "error", 6000);
+            params.delete("google_link_error");
+            const newUrl = window.location.pathname + (params.toString() ? "?" + params.toString() : "");
+            window.history.replaceState({}, document.title, newUrl);
+        }
+    }
 
     // --- Note Management ---
     async function handleSaveNote(e) {
@@ -171,7 +235,7 @@
             showMessage(UI.displays.mainStatus, data.message, "success");
             resetEditor();
         } catch (error) {
-            showMessage(UI.displays.mainStatus, error.message, "error");
+            showMessage(UI.displays.mainStatus, error.message || "Failed to save note", "error");
         } finally {
             showLoader(false);
         }
@@ -185,7 +249,7 @@
             state.notesCache = data || [];
             renderHistory(UI.inputs.searchNotes.value);
         } catch (error) {
-            showMessage(UI.displays.historyStatus, error.message, "error");
+            showMessage(UI.displays.historyStatus, error.message || "Failed to load history", "error");
         } finally {
             showLoader(false);
         }
@@ -203,7 +267,7 @@
             updateBulkActionUI();
             showMessage(UI.displays.historyStatus, `Successfully deleted ${filenames.length} note(s).`, "success");
         } catch (error) {
-            showMessage(UI.displays.historyStatus, error.message, "error");
+            showMessage(UI.displays.historyStatus, error.message || "Failed to delete", "error");
         } finally {
             showLoader(false);
         }
@@ -374,14 +438,50 @@
     }
 
     // --- Google Drive Integration ---
-    async function startDriveConnect() { }
+    async function startDriveConnect() {
+        // Calls backend /auth/google/start which returns { auth_url, redirect_uri }
+        showLoader(true);
+        try {
+            const data = await apiRequest("/auth/google/start", "GET");
+            if (data && data.auth_url) {
+                // redirect browser to the Google OAuth URL
+                window.location.href = data.auth_url;
+            } else {
+                showMessage(UI.displays.mainStatus, "Google authorization not configured on backend.", "error");
+            }
+        } catch (error) {
+            showMessage(UI.displays.mainStatus, error.message || "Failed to start Google OAuth", "error");
+        } finally {
+            showLoader(false);
+        }
+    }
 
     async function loadUserProfile() {
-        // Fill in user info if available, or you can call an API to get user profile
-        // Example: UI.displays.userEmail.textContent = "user@example.com";
-        // For demo, show token existence
-        if (state.token) {
-            UI.displays.userEmail.textContent = "Logged in";
+        if (!state.token) {
+            state.userEmail = null;
+            state.driveLinked = false;
+            showView("login");
+            return;
+        }
+        showLoader(true);
+        try {
+            const profile = await apiRequest("/me", "GET");
+            // expected { id, email, drive_linked }
+            state.userEmail = profile.email || "Logged in";
+            state.driveLinked = !!profile.drive_linked;
+            showView(state.currentView === "history" ? "history" : "main");
+        } catch (error) {
+            // if unauthorized, clear token and force login
+            if (error.message && error.message.toLowerCase().includes("authorization")) {
+                localStorage.removeItem("token");
+                state.token = null;
+                showView("login");
+                showMessage(UI.displays.loginStatus, "Session expired. Please login again.", "error");
+            } else {
+                showMessage(UI.displays.loginStatus, error.message || "Failed to load profile", "error");
+            }
+        } finally {
+            showLoader(false);
         }
     }
 
@@ -479,9 +579,14 @@
     }
 
     async function initializeApp() {
+        checkOAuthRedirectFlags();
         if (state.token) {
-            loadUserProfile();
-            showView("main");
+            try {
+                await loadUserProfile();
+                showView("main");
+            } catch (e) {
+                showView("login");
+            }
         } else {
             showView("login");
         }
